@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/CMakeFiles/bootloader
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/CMakeFiles/bootloader.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/CMakeFiles/bootloader-complete.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
