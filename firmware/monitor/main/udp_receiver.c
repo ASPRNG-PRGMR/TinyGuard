@@ -17,11 +17,24 @@
  * Parsing strategy: strstr() + sscanf() per field.
  * Robust enough for a fixed-schema packet from our own firmware.
  * No dynamic allocation. No third-party JSON library required.
+ *
+ * Phase 2 integration:
+ *   After stats_engine_update(), a snapshot is taken once and shared with
+ *   anomaly_engine, behavior_profile, and correlation_tracker — avoiding
+ *   redundant snapshot calls. behavior_profile_seed() is called exactly once
+ *   at the heartbeat where snap.learning first transitions to false (edge
+ *   detection via s_phase1_was_learning). behavior_profile_update() and
+ *   correlation_tracker_update() are called every post-learning heartbeat.
+ *   correlation_tracker_update() receives stream_active directly from the
+ *   parsed heartbeat packet — not derived from viewer_count.
  */
 
 #include "udp_receiver.h"
 #include "device_state.h"
 #include "stats_engine.h"
+#include "anomaly_engine.h"
+#include "behavior_profile.h"
+#include "correlation_tracker.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -47,6 +60,13 @@
 /* ──────────────────────────────────────────────────────────────────────── */
 
 static const char *TAG = "UDP-RX";
+
+/*
+ * Phase 2: tracks whether Phase 1 was still learning on the previous
+ * heartbeat. Used to detect the exact heartbeat where learning ends,
+ * so behavior_profile_seed() is called exactly once.
+ */
+static bool s_phase1_was_learning = true;
 
 /* ── LED helpers ─────────────────────────────────────────────────────── */
 
@@ -165,6 +185,44 @@ static void udp_rx_task(void *arg)
             .viewer_count    = s.viewer_count,
         };
         stats_engine_update(&stat_sample);
+
+        /*
+         * Take ONE snapshot here. Both anomaly_engine and behavior_profile
+         * consume it — no redundant stats_engine_get_snapshot() calls.
+         * (Phase 3 note: pass snap to future modules the same way.)
+         */
+        stats_snapshot_t snap = stats_engine_get_snapshot();
+
+        anomaly_engine_heartbeat_received();
+        anomaly_engine_evaluate();
+
+        /* ── Phase 2: long-term behavioral profiling ── */
+
+        /*
+         * Seed on the exact heartbeat where Phase 1 learning ends.
+         * s_phase1_was_learning starts true; once snap.learning is false
+         * this edge fires once and never again (seeded_done guard inside
+         * behavior_profile_seed() provides a second safety net).
+         */
+        if (s_phase1_was_learning && !snap.learning) {
+            s_phase1_was_learning = false;
+            behavior_profile_seed(&snap);
+        }
+
+        /* Per-heartbeat update — behavior_profile_update() suppresses
+         * itself during learning and before seed, so this is safe to
+         * call unconditionally. */
+        behavior_profile_update(&snap);
+
+        /*
+         * Correlation tracking — Phase 2 module 2.
+         * Takes a behavior_profile snapshot once and passes it alongside
+         * the stats snapshot. stream_active comes directly from the parsed
+         * heartbeat — NOT derived from viewer_count. This is required to
+         * detect stream_active=1 with viewer_count=0.
+         */
+        behavior_profile_snapshot_t bp_snap = behavior_profile_get_snapshot();
+        correlation_tracker_update(&snap, &bp_snap, s.stream_active);
 
         /* ── Serial output ──
          * Rules for ESP-IDF v5 ESP_LOGI:

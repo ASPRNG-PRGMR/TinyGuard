@@ -16,8 +16,8 @@
 
 // --- Configuration -----------------------------------------------------------
 // Replace with your laptop hotspot credentials.
-static const char* SSID     = "YOUR_HOTSPOT_SSID";
-static const char* PASSWORD = "YOUR_HOTSPOT_PASSWORD";
+static const char* SSID     = "idk";
+static const char* PASSWORD = "lol12345";
 
 static const IPAddress STATIC_IP (192, 168, 137, 10);
 static const IPAddress GATEWAY   (192, 168, 137,  1);

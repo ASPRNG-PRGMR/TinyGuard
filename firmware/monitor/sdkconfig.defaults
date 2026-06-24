@@ -1,19 +1,18 @@
 # TinyGuard Monitor — sdkconfig.defaults
+# These options are merged into sdkconfig on first `idf.py build`.
+# Do not edit sdkconfig directly; set overrides here.
 
 # WiFi
 CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=10
 CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP32_WIFI_TX_BUFFER=DYNAMIC
 
-# LWIP — UDP socket support
+# Networking
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
-CONFIG_LWIP_SO_RCVBUF=y
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
-
-# GPIO
-CONFIG_GPIO_ESP32_SUPPORT_SWITCH_SLP_PULL=y

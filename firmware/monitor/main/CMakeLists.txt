@@ -5,8 +5,13 @@ idf_component_register(
         "device_state.c"
         "udp_receiver.c"
         "stats_engine.c"
-    INCLUDE_DIRS "."
+        "anomaly_engine.c"
+        "alert_manager.c"
+        "dashboard_server.c"
+        "behavior_profile.c"
+	"correlation_tracker.c"
+    	INCLUDE_DIRS "."
 )
 
-# sqrtf() is in libm — required by stats_engine.c
+# sqrtf() / fabsf() from libm
 target_link_libraries(${COMPONENT_LIB} PRIVATE m)

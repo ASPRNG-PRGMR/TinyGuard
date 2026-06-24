@@ -17,6 +17,7 @@
 #include "camera_server.h"
 #include "esp_camera.h"
 #include <WebServer.h>
+#include <WiFi.h>  
 #include <Arduino.h>
 
 // AI Thinker ESP32-CAM pin map

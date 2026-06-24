@@ -22,8 +22,8 @@
 #include <string.h>
 
 /* ── configuration ───────────────────────────────────────────────────── */
-#define WIFI_SSID      "YOUR_HOTSPOT_SSID"
-#define WIFI_PASSWORD  "YOUR_HOTSPOT_PASSWORD"
+#define WIFI_SSID      "idk"
+#define WIFI_PASSWORD  "lol12345"
 
 #define STATIC_IP      "192.168.137.20"
 #define STATIC_GW      "192.168.137.1"
