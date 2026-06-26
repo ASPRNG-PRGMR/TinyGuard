@@ -39,13 +39,13 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader/esp-idf/cmake_install.cmake")
+  include("/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader/esp-idf/cmake_install.cmake")
 endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader/install_local_manifest.txt"
+  file(WRITE "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()
 if(CMAKE_INSTALL_COMPONENT)
@@ -61,6 +61,6 @@ else()
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

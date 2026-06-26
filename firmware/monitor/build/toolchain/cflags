@@ -1,6 +1,0 @@
--Wno-frame-address
--mlongcalls
--fno-builtin-memcpy
--fno-builtin-memset
--fno-builtin-bzero
-"-specs=/home/noobiegg/Downloads/firefox/tinyguard_m0_m1/firmware/monitor/build/specs/picolibc.specs"

@@ -10,18 +10,18 @@ if(NOT EXISTS "/home/notadmin/esp/esp-idf/components/bootloader/subproject")
   file(MAKE_DIRECTORY "/home/notadmin/esp/esp-idf/components/bootloader/subproject")
 endif()
 file(MAKE_DIRECTORY
-  "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader"
-  "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix"
-  "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix/tmp"
-  "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp"
-  "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix/src"
-  "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp"
+  "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader"
+  "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix"
+  "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix/tmp"
+  "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp"
+  "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix/src"
+  "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp"
 )
 
 set(configSubDirs )
 foreach(subDir IN LISTS configSubDirs)
-    file(MAKE_DIRECTORY "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/${subDir}")
+    file(MAKE_DIRECTORY "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp/${subDir}")
 endforeach()
 if(cfgdir)
-  file(MAKE_DIRECTORY "/mnt/c/Users/it/Downloads/tinyguard_full/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp${cfgdir}") # cfgdir has leading slash
+  file(MAKE_DIRECTORY "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/bootloader-prefix/src/bootloader-stamp${cfgdir}") # cfgdir has leading slash
 endif()

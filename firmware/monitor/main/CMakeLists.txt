@@ -5,12 +5,14 @@ idf_component_register(
         "device_state.c"
         "udp_receiver.c"
         "stats_engine.c"
+        "fingerprint_engine.c"
         "anomaly_engine.c"
         "alert_manager.c"
         "dashboard_server.c"
         "behavior_profile.c"
-	"correlation_tracker.c"
-    	INCLUDE_DIRS "."
+        "correlation_tracker.c"
+        "session_tracker.c"
+    INCLUDE_DIRS "."
 )
 
 # sqrtf() / fabsf() from libm

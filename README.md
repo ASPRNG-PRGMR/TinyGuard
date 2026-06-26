@@ -1,14 +1,17 @@
 # TinyGuard
 
-Lightweight IoT camera behavior monitoring using communication metadata — no packet inspection, no decryption.
+> Detect suspicious IoT camera behavior using network metadata — without inspecting a single payload byte.
 
-Runs on two ESP32 boards. One simulates a home WiFi camera. The other monitors its behavior and detects anomalies using statistical profiling and behavioral fingerprinting.
+Lightweight communication-behavior anomaly detection for home IoT cameras.
+Runs on two ESP32 boards: one simulates a camera, one monitors it.
 
 ---
 
 ## How It Works
 
-The camera sends a UDP heartbeat every 10 seconds containing RSSI, uptime, stream state, viewer count, and reconnect count. The monitor builds rolling statistical baselines for each metric during a 5-minute learning phase, then detects deviations using z-score analysis. Phase 2 adds long-term behavioral profiles and Pearson correlation tracking between metric pairs, catching relationship-level anomalies that individual metric monitoring cannot see. Alerts are surfaced via serial and a live web dashboard.
+The camera sends a UDP heartbeat every 10 seconds containing RSSI, uptime, stream state, viewer count, and reconnect count. The monitor builds rolling statistical baselines during a 5-minute learning phase, then detects deviations using z-score analysis.
+
+Phase 2 adds long-term behavioral profiles, Pearson correlation tracking between metric pairs, session-level behavioral fingerprinting, and a Profile Divergence Score (PDS) that combines all signals into a single 0–100 behavioral health indicator.
 
 Nothing in the application layer is inspected. Detection is based entirely on observable communication behavior.
 
@@ -51,7 +54,9 @@ tinyguard/
 │           ├── alert_manager.h / .c
 │           ├── dashboard_server.h / .c
 │           ├── behavior_profile.h / .c      # Phase 2
-│           └── correlation_tracker.h / .c   # Phase 2
+│           ├── correlation_tracker.h / .c   # Phase 2
+│           ├── session_tracker.h / .c       # Phase 2
+│           └── fingerprint_engine.h / .c    # Phase 2
 │
 ├── scripts/
 │   └── validate.py                # Laptop-side injection tool for validation
@@ -86,6 +91,10 @@ idf.py build && idf.py flash monitor
 
 Confirm on serial: `[WiFi-Monitor] Connected. IP: 192.168.137.20`
 
+> **CMakeLists.txt:** ensure `main/CMakeLists.txt` lists all Phase 2 source files in `SRCS`:
+> `behavior_profile.c`, `correlation_tracker.c`, `session_tracker.c`, `fingerprint_engine.c`.
+> Missing entries cause linker errors that look like undefined references to `_init` functions.
+
 Open browser: `http://192.168.137.20/` — dashboard loads immediately.
 
 > **One USB cable?** Flash monitor, confirm WiFi on serial, then unplug. Power camera separately. GPIO2 LED blinks every ~10s while heartbeats are arriving.
@@ -97,35 +106,101 @@ Open browser: `http://192.168.137.20/` — dashboard loads immediately.
 After the learning phase completes (5 minutes), run attack scenarios from your laptop:
 
 ```bash
-# Phase 1 scenarios
+# Phase 1 scenarios (work immediately after learning phase)
 python3 scripts/validate.py rssi
 python3 scripts/validate.py reconnect
 python3 scripts/validate.py stream
 python3 scripts/validate.py heartbeat_stop
-
-# Full suite
 python3 scripts/validate.py all
+
+# Phase 2 correlation scenarios
+# Require ~23 min post-learning for EMA variance to mature
+# Inject sustained broken metric-pair relationships
+
+# Phase 2 fingerprint scenarios
+# Require behavior_profile.all_ready (~20 min post-learning)
+# Best triggered by combining multiple anomalies simultaneously
+# Single-signal injection typically produces sub-threshold PDS
 ```
 
-Phase 2 correlation scenarios require additional post-`all_ready` settling time (~23 minutes for EMA variance to mature). Inject sustained metric pairs that break the learned correlation relationships to trigger `CORRELATION_ANOMALY` alerts.
+Watch `http://192.168.137.20/` during runs. Alerts appear in real-time on the dashboard.
 
-Watch `http://192.168.137.20/` during runs. Alerts appear in real-time.
-
-> The script bypasses the physical camera entirely — it sends crafted UDP packets directly to the monitor. This lets you trigger each scenario deterministically without moving hardware.
+> The script bypasses the camera entirely — sends crafted UDP packets directly to the monitor. Each scenario is reproducible and deterministic.
 
 ---
 
 ## Dashboard
 
-Served by the monitor at `http://192.168.137.20/`. Refreshes every 2 seconds.
+Served by the monitor at `http://192.168.137.20/`. Polls `/status` every 10 seconds via JavaScript fetch — no page refresh.
 
-- Device status: OFFLINE / LEARNING / MONITORING / TIMEOUT
-- Last heartbeat age, camera uptime, RSSI, stream state, viewer count, reconnects
-- Rolling statistics: mean and stddev per metric
-- Alert history: last 8 alerts, colour-coded by level
-- Correlation panel: per-pair Pearson r, EMA baseline, z-score, ready and alert state
+### Panels
 
-JSON endpoint: `http://192.168.137.20/status`
+**Device Health**
+Status badge (OFFLINE / LEARNING / MONITORING / TIMEOUT), PDS badge, last heartbeat age, camera uptime, RSSI, stream state, viewers, reconnects, packet count.
+
+**Behavioral Fingerprint**
+Profile Divergence Score (0–100) with colour-coded bar. Component breakdown table showing sub-score and maximum z-score for each of the three PDS components (Metric Drift, Correlation Drift, Session Drift) with readiness indicators. Hidden until `behavior_profile.all_ready`.
+
+**Correlation Tracking**
+Table showing all three correlation pairs: current Pearson r, EMA baseline r, z-score, alert indicator. Shows warming-up state for pairs not yet ready.
+
+**Session Behavior**
+Sessions completed, currently-streaming indicator, session starts in the rolling window, average session duration ± stddev, average inter-session interval ± stddev. Hidden until 5 sessions completed.
+
+**Rolling Statistics**
+Mean and stddev for all four metrics (RSSI, HB interval, reconnect rate, viewer count) with live sparklines. Sparklines accumulate client-side from `/status` polling — no additional storage on the ESP32.
+
+**Alert Timeline**
+Last 8 alerts, most recent first. Each alert shows level badge, source category (`[METRIC]`, `[CORR]`, `[FP]`, `[WATCH]`), and message.
+
+### JSON Endpoint
+
+`http://192.168.137.20/status` returns a complete JSON snapshot:
+
+```json
+{
+  "status": "MONITORING",
+  "rssi": -43,
+  "uptime_ms": 123456,
+  "last_rx_age_ms": 4200,
+  "stream_active": false,
+  "viewer_count": 0,
+  "reconnects": 0,
+  "packet_count": 847,
+  "learning": false,
+  "rssi_mean": -42.8,
+  "rssi_stddev": 1.2,
+  "fingerprint": {
+    "pds": 12,
+    "ready": true,
+    "alert_elevated": false,
+    "alert_critical": false,
+    "metric_drift":      { "sub_score": 8,  "max_zscore": 0.48, "ready": true },
+    "correlation_drift": { "sub_score": 15, "max_zscore": 0.90, "ready": true },
+    "session_drift":     { "sub_score": 5,  "max_zscore": 0.30, "ready": true }
+  },
+  "correlation": {
+    "ready": true,
+    "pairs": [
+      { "id": 0, "ready": true, "r": -0.82, "ema_r": -0.79, "zscore": -0.41, "alert": false },
+      { "id": 1, "ready": true, "r": -0.71, "ema_r": -0.68, "zscore": -0.28, "alert": false },
+      { "id": 2, "ready": true, "r":  0.05, "ema_r":  0.04, "zscore":  0.12, "alert": false }
+    ]
+  },
+  "session": {
+    "ready": true,
+    "sessions_completed": 14,
+    "in_session": false,
+    "session_count_in_window": 1,
+    "ema_duration_ms": 312000,
+    "ema_duration_stddev": 45000,
+    "ema_interval_ms": 3600000,
+    "ema_interval_stddev": 480000
+  },
+  "alert_count": 3,
+  "alerts": [...]
+}
+```
 
 ---
 
@@ -164,80 +239,113 @@ Transport: UDP · Port: 5000 · Interval: 10s
 
 | Parameter | Value |
 |---|---|
-| Minimum samples per pair before alerting | 30 |
-| EMA alpha for r baseline | 0.005 |
-| EMA half-life (approximate) | 139 samples (~23 min) |
+| Minimum samples per pair | 30 |
+| EMA alpha | 0.005 |
+| EMA half-life | ~139 samples (~23 min) |
 | Z-score threshold | 3.0 |
-| Variance floor (below = z-score suppressed) | 0.0025 |
-| Consecutive samples to alert / clear | 3 |
+| Variance floor | 0.0025 |
+| Consecutive samples to alert/clear | 3 |
+
+### Phase 2 — Session Tracking
+
+| Parameter | Value |
+|---|---|
+| EMA alpha | 0.1 |
+| EMA half-life | ~7 sessions |
+| Sessions required before ready | 5 |
+| Minimum session duration (noise floor) | 2000 ms |
+| Session count window | 60 heartbeats (~10 min) |
+
+### Phase 2 — Profile Divergence Score
+
+| Parameter | Value |
+|---|---|
+| Metric Drift weight | 40% |
+| Correlation Drift weight | 35% |
+| Session Drift weight | 25% |
+| Z-scale (z=6 → sub-score 100) | 6.0 |
+| Elevated threshold | PDS ≥ 25 |
+| Critical threshold | PDS ≥ 75 |
+| Consecutive evaluations to alert/clear | 3 |
 
 ---
 
-## Alert Levels
+## Alert Types
 
-| Level | Triggers |
-|---|---|
-| INFO | Device connected, learning complete (`LEARNING_COMPLETE`) |
-| WARNING | RSSI anomaly, reconnect anomaly, stream anomaly, HB interval anomaly (`HB_INTERVAL_ANOMALY`), correlation anomaly (`CORRELATION_ANOMALY`) |
-| CRITICAL | Missing heartbeat (`HEARTBEAT_MISSING`) |
+| Level | Type | Trigger |
+|---|---|---|
+| INFO | `DEVICE_CONNECTED` | Camera reconnects after absence |
+| INFO | `LEARNING_COMPLETE` | Phase 1 baseline established |
+| WARNING | `RSSI_ANOMALY` | RSSI z-score > 3.0 for 3 consecutive samples |
+| WARNING | `HB_INTERVAL_ANOMALY` | Heartbeat timing z-score > 3.0 |
+| WARNING | `RECONNECT_ANOMALY` | Reconnect rate z-score > 3.0 |
+| WARNING | `STREAM_ANOMALY` | Viewer count z-score > 3.0 |
+| WARNING | `CORRELATION_ANOMALY` | Pearson r z-score > 3.0 for a pair |
+| WARNING | `PDS_ELEVATED` | PDS ≥ 25 for 3 consecutive evaluations |
+| CRITICAL | `HEARTBEAT_MISSING` | No heartbeat for 30s (watchdog path) |
+| CRITICAL | `PDS_CRITICAL` | PDS ≥ 75 for 3 consecutive evaluations |
 
-Note: `HEARTBEAT_MISSING` and `HB_INTERVAL_ANOMALY` are distinct alert types. `HEARTBEAT_MISSING` fires when no packet is received for 30s (watchdog path). `HB_INTERVAL_ANOMALY` fires when packets arrive but their inter-arrival timing is statistically anomalous (z-score path).
+Note: `HEARTBEAT_MISSING` and `HB_INTERVAL_ANOMALY` are distinct. `HEARTBEAT_MISSING` fires when packets stop arriving entirely (watchdog task). `HB_INTERVAL_ANOMALY` fires when packets arrive but inter-arrival timing is statistically anomalous (z-score path).
 
 ---
 
-## Phase 2 — Behavioral Fingerprinting
+## Phase 2 Architecture
 
-### Long-Term Behavioral Profiles (`behavior_profile`)
+### Module Dependency Order
 
-Phase 1 statistics use a 60-sample rolling window (~10 minutes). Behavioral profiles add a second layer: EMA means and variances with alpha=0.005, giving a half-life of ~23 minutes and a meaningful baseline after several hours of operation.
+```
+stats_engine          ← Phase 1 foundation
+    │
+    ├── anomaly_engine         (Phase 1 detection)
+    │
+    └── behavior_profile       (Phase 2 — long-term EMA baselines)
+            │
+            ├── correlation_tracker    (Phase 2 — Pearson r between pairs)
+            │
+            └── session_tracker        (Phase 2 — stream session fingerprint)
+                        │
+                        └── fingerprint_engine   (Phase 2 — PDS terminal consumer)
+                                    │
+                                    └── dashboard_server   (display)
+```
 
-EMA means are seeded from the settled Phase 1 baseline when `learning_complete` fires, avoiding warmup bias. Variance is not seeded — it starts from zero and accumulates naturally. The profile is not considered ready (`all_ready=false`) until EMA variances have matured.
+### Call Order in udp_receiver (per heartbeat)
 
-### Correlation Tracking (`correlation_tracker`)
+```
+stats_engine_update()
+stats_engine_get_snapshot()          ← one snapshot, shared downstream
+anomaly_engine_heartbeat_received()
+anomaly_engine_evaluate()
+[learning→active edge]
+  behavior_profile_seed()            ← called once only
+behavior_profile_update()
+behavior_profile_get_snapshot()      ← one snapshot, shared downstream
+correlation_tracker_update()
+session_tracker_update()
+fingerprint_engine_update()          ← terminal consumer, pulls own snapshots
+```
 
-Tracks Pearson r between three metric pairs selected for physical meaningfulness:
+### Memory Summary
 
-| Pair | What it detects |
+| Module | Static RAM |
 |---|---|
-| RSSI ↔ reconnect_rate | Signal-correlated reconnects decoupled — possible spoofed RSSI or forced reconnects |
-| RSSI ↔ heartbeat_interval | Signal degradation without timing stress — camera may not be the signal source |
-| stream_active ↔ viewer_count | Stream active with no viewers, or viewers reported with no active stream |
+| stats_engine | ~3840 bytes (4 × 60-sample float buffers) |
+| anomaly_engine | ~48 bytes |
+| alert_manager | ~3200 bytes (32 × alert_t) |
+| behavior_profile | ~80 bytes |
+| correlation_tracker | ~1550 bytes |
+| session_tracker | ~56 bytes |
+| fingerprint_engine | ~48 bytes |
+| **Phase 2 total** | **~1734 bytes** |
 
-The `stream_active ↔ viewer_count` pair uses the raw `stream_active` boolean from the heartbeat packet, not a value derived from viewer count. This is the only way to detect `stream_active=1, viewer_count=0` — the primary threat case for unauthorized streaming with suppressed viewer reporting.
+No heap allocation in any module. No dynamic containers.
 
-**Rejected pair:** `reconnect_rate ↔ viewer_count`. No physical relationship exists between viewer activity and reconnect behavior. The expected baseline converges toward noise, increasing false-positive risk without detection value.
+### Snapshot-Sharing Pattern
 
-### Readiness Model
-
-Correlation output is gated on three layers:
-
-1. Phase 1 learning complete (`snap->learning == false`)
-2. Behavioral profile mature (`bp->all_ready == true`)
-3. Per-pair: at least 30 samples in the rolling window and the first valid Pearson r has seeded the EMA baseline
-
-Layers 1 and 2 are global — no pair accumulates samples until both are satisfied. Layer 3 is per-pair: each pair begins alerting independently when its own buffer is ready. Pairs do not wait for each other. `correlation_snapshot_t.ready` is true only when all pairs satisfy layer 3.
-
-The RSSI ↔ heartbeat_interval pair will reach layer 3 slightly later than the other two pairs because it skips samples until a valid HB interval delta exists (requires at least 2 received heartbeats).
-
-### Memory
-
-Phase 2 adds approximately 1550 bytes of static RAM:
-
-| Component | RAM |
-|---|---|
-| behavior_profile (4 EMA channels) | ~80 bytes |
-| correlation_tracker (3 pairs × ~514 bytes) | ~1542 bytes |
-| Mutex handles | ~16 bytes |
-| **Total Phase 2 addition** | **~1638 bytes** |
-
-No heap allocation. No dynamic containers.
-
-### Snapshot Architecture
-
-`udp_receiver` acquires one `stats_snapshot_t` and one `behavior_profile_snapshot_t` per heartbeat and passes them by pointer to all Phase 2 consumers. This avoids repeated mutex acquisitions inside each module and is the standard integration pattern for all future Phase 2 and Phase 3 modules.
+`udp_receiver` acquires snapshots once per heartbeat and distributes by pointer. No module calls `stats_engine_get_snapshot()` or `behavior_profile_get_snapshot()` independently mid-pipeline. Exception: `fingerprint_engine_update()` is the terminal consumer and calls `stats_engine_get_snapshot()` internally — acceptable since it runs after all pipeline stages have committed.
 
 ---
 
 ## Status
 
-Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting and correlation tracking) complete. Phase 3 (STM32 DSP analysis) planned. See `devlog.md` for full engineering history.
+Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.
