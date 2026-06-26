@@ -3,7 +3,7 @@
  *
  * Sends a UDP heartbeat packet to the monitor every HEARTBEAT_INTERVAL_MS.
  *
- * Packet format (JSON, from MVP spec):
+ * Packet format:
  *   {
  *     "device":        "esp32cam",
  *     "uptime":        123456,       // milliseconds since boot

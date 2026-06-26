@@ -23,14 +23,17 @@
 
 **`wifi_manager`**
 - Connects to laptop hotspot (static IP `192.168.137.10`)
-- WiFi event handler: logs disconnect, increments reconnect counter, calls `WiFi.reconnect()`
+- WiFi event handler: logs disconnect, increments reconnect counter, schedules `WiFi.reconnect()` via a 500ms one-shot FreeRTOS timer (deferred to give the AP time to release the old association before retrying — immediate reconnect caused repeated drop loops on the AI Thinker module)
+- `s_connected` flag guards the `DISCONNECTED` handler: only drops from an established connection (`GOT_IP` previously received) increment the counter, preventing spurious counts during initial association
 - Blocks in `wifi_manager_init()` until connected (20s timeout → reboot)
 
 **`camera_server`**
 - Initialises OV2640; uses PSRAM if available (VGA/quality 10), else QVGA/quality 12
 - HTTP server on port 80: `GET /` status page, `GET /stream` MJPEG multipart
-- Viewer count tracked on connect/disconnect
-- HTTP server pinned to FreeRTOS core 1 so `loop()` is never blocked
+- Viewer count tracked on connect/disconnect; protected by `SemaphoreHandle_t` mutex so `telemetry_collect()` on core 0 never races the streamer on core 1
+- HTTP server task pinned to core 1 at priority 1; loops calling `handleClient()` continuously
+- `handle_stream()` detaches the raw `WiFiClient` from `WebServer` and spawns a short-lived `streamer_task` (core 1, priority 2) that owns the client — `handleClient()` returns immediately and stays live for new connections
+- Streamer task writes MJPEG frames paced by `FRAME_INTERVAL_MS`, checks `client.connected()` after every frame, and cleans up atomically on drop or write error
 
 **`telemetry_collector`**
 - Aggregates RSSI, uptime, stream state, viewer count, reconnect count into `telemetry_t`
@@ -47,7 +50,6 @@
 
 ### Known limitations
 - `timestamp` is uptime seconds, not wall-clock (no NTP)
-- Stream handler is synchronous — one viewer at a time; sufficient for MVP
 
 ---
 
@@ -748,3 +750,71 @@ After applying all four fixes:
 The null mutex crash is a class of bug that will recur if new modules are added without updating `main.c`. The rule is now documented in `main.c` as a comment: every module with a mutex must be initialised before `udp_receiver_start()`. The init block in `app_main()` is the canonical list of all active modules.
 
 The trigraph issue is specific to embedding JavaScript in C string literals. Any JS operator containing `?` as a non-first character is a potential trigraph hazard under GCC. The safe rule: avoid `??` in C string literals; use explicit ternary instead.
+
+---
+
+## Milestone 13 — Camera Stream Stability and Dashboard Sparkline Improvements
+
+### Camera node fixes (`firmware/esp32cam/`)
+
+#### Issue 1 — Blocking stream handler starving `handleClient()`
+
+**Symptom:** Opening `http://192.168.137.10/stream` in a browser tab caused the camera HTTP server to become completely unresponsive to all other requests. Any reconnect attempt, new tab, or browser refresh hung indefinitely. When the stream client dropped (WiFi glitch or tab close), recovery was unreliable.
+
+**Root cause:** The original `handle_stream()` ran a `while(client.connected())` frame loop with `delay(100)` inside the same FreeRTOS task that called `server.handleClient()`. While one client was streaming, `handleClient()` was never called — the server was deaf. On client drop, the task was stuck until the next frame attempt failed, then returned to `handleClient()`. The 100ms `delay()` also meant any WiFi hiccup long enough to stall a write would hold the task for the full delay duration.
+
+**Fix:** `handle_stream()` now immediately detaches the raw `WiFiClient` from the `WebServer` object (replacing it with an empty client so the server doesn't try to close it) and spawns a short-lived `streamer_task` (core 1, priority 2) that owns the detached client. `handle_stream()` returns immediately. `handleClient()` keeps running at priority 1 and remains responsive to new connections throughout. The streamer task paces frames using `vTaskDelay()` (not `delay()`), checks `client->connected()` and `client->write()` return values after every frame, and calls `vTaskDelete(nullptr)` on exit.
+
+Multiple simultaneous viewers are now each served by an independent task. The server stays live regardless of stream client state.
+
+#### Issue 2 — `s_viewer_count` / `s_stream_active` race between cores
+
+**Symptom:** Potential torn reads of viewer state from `telemetry_collect()` on core 0 while the streamer updated it on core 1.
+
+**Root cause:** `volatile` alone does not guarantee atomicity for the increment/decrement sequence on a dual-core ESP32. `telemetry_collect()` could observe `s_stream_active = true` with `s_viewer_count = 0` during the decrement sequence.
+
+**Fix:** `s_viewer_count` and `s_stream_active` are now protected by a `SemaphoreHandle_t` mutex created in `camera_server_init()`. `viewer_inc()` and `viewer_dec()` are the only write paths — both take the mutex. `camera_server_is_streaming()` and `camera_server_get_viewer_count()` take the mutex with a 5ms timeout before reading. The telemetry accessors degrade gracefully (return false / 0) if the mutex is held longer than 5ms.
+
+#### Issue 3 — Reconnect counter incremented during initial association
+
+**Symptom:** `reconnects` field in the heartbeat showed 1 (or occasionally 2) immediately after boot, before any genuine disconnect had occurred. This produced a false spike in the reconnect graph on first boot.
+
+**Root cause:** The `ARDUINO_EVENT_WIFI_STA_DISCONNECTED` event fires during the initial association sequence before `ARDUINO_EVENT_WIFI_STA_GOT_IP` is received. The original handler incremented `s_reconnect_count` unconditionally.
+
+**Fix:** Added `s_connected` flag (set on `GOT_IP`, cleared on `DISCONNECTED`). The reconnect counter is only incremented when `s_connected` was true — i.e., only for drops from an established connection.
+
+#### Issue 4 — Immediate `WiFi.reconnect()` causing reconnect loops
+
+**Symptom:** After a genuine drop, the camera would sometimes oscillate — disconnect, immediately attempt reconnect, get rejected by the AP (which hadn't released the old association entry yet), disconnect again, repeat. This produced several reconnect counter increments from a single real event.
+
+**Fix:** `WiFi.reconnect()` is now called via a 500ms one-shot FreeRTOS timer created inside the `DISCONNECTED` handler. The delay gives the AP time to clean up the old station entry. If the timer allocation fails (memory pressure), `WiFi.reconnect()` is called immediately as a fallback.
+
+### Dashboard sparkline improvements (`firmware/monitor/dashboard_server.c`)
+
+#### Reconnects/hr sparkline removed
+
+The reconnects sparkline (yellow) tracked `d.reconnects` (raw cumulative counter). As a step counter with a value of 0 or low single digits under normal operation, the sparkline was a flat or near-flat line with occasional step discontinuities — not meaningfully different from the number already displayed in the Device card. Removed.
+
+#### Viewers sparkline removed
+
+The viewers sparkline tracked `d.viewer_count`, which is 0 or 1 in practice. The sparkline was binary — a square wave at best, flat at worst. The raw count in the Device card is sufficient. Removed.
+
+#### RSSI Stability sparkline added (orange, `#f0883e`)
+
+Plots `rssi_stddev` (rolling standard deviation of RSSI) over the last 60 polls. A flat low line indicates a stable signal; sudden increases indicate link instability. This is a leading indicator for disconnections and a complementary view to the raw RSSI sparkline — the mean tells you signal level, the stddev tells you signal stability. The label reads "lower = better" so the interpretation is immediately obvious.
+
+Data source: `d.rssi_stddev` — already present in `/status` JSON, no firmware change required.
+
+#### PDS History sparkline added (purple, `#a371f7`)
+
+Plots `fingerprint.pds` over the last 60 polls. The PDS panel already shows the current score; the sparkline shows whether it is trending up, down, or stable. During validation runs (e.g., `validate.py rssi`) the PDS will visibly climb and then recover — this is the primary observable for demonstrating detection. Shows `(maturing…)` until `fingerprint.ready` is true.
+
+Data source: `d.fingerprint.pds` — already present in `/status` JSON, no firmware change required.
+
+### Validation
+
+- Stream opens immediately and stays smooth; no server lockups during reconnect or multi-tab access
+- Reconnect counter shows 0 on fresh boot, increments only on genuine drops
+- RSSI Stability sparkline shows low flat line under normal operation; spikes visible when camera is moved to edge of range
+- PDS History sparkline shows gradual climb during `validate.py rssi` run, returns to baseline on recovery
+- Device card reconnect count and viewer count numbers unchanged — still present and accurate

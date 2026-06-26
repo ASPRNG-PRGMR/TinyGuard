@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "tinyguard_monitor",
-    "project_version":    "a31ead5-dirty",
+    "project_version":    "cb6466d-dirty",
     "project_path":       "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor",
     "idf_path":           "/home/notadmin/esp/esp-idf",
     "build_dir":          "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build",

@@ -148,7 +148,7 @@ Table showing all three correlation pairs: current Pearson r, EMA baseline r, z-
 Sessions completed, currently-streaming indicator, session starts in the rolling window, average session duration ± stddev, average inter-session interval ± stddev. Hidden until 5 sessions completed.
 
 **Rolling Statistics**
-Mean and stddev for all four metrics (RSSI, HB interval, reconnect rate, viewer count) with live sparklines. Sparklines accumulate client-side from `/status` polling — no additional storage on the ESP32.
+Mean and stddev for RSSI and HB interval with live sparklines. Two additional sparklines show RSSI Stability (rolling stddev over time — a leading indicator for link instability) and PDS History (Profile Divergence Score trend over the last 60 polls). Sparklines accumulate client-side from `/status` polling — no additional storage on the ESP32.
 
 **Alert Timeline**
 Last 8 alerts, most recent first. Each alert shows level badge, source category (`[METRIC]`, `[CORR]`, `[FP]`, `[WATCH]`), and message.
@@ -348,4 +348,4 @@ No heap allocation in any module. No dynamic containers.
 
 ## Status
 
-Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.
+Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Camera stream architecture overhauled for stability (non-blocking per-client streamer tasks, mutex-protected viewer state, deferred reconnect). Dashboard sparklines updated: reconnects/hr and viewers graphs replaced with RSSI Stability (stddev trend) and PDS History. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.
