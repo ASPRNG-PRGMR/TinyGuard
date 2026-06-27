@@ -76,15 +76,18 @@ tinyguard/
 ### Camera — Arduino IDE
 
 1. Open `firmware/esp32cam/` in Arduino IDE
-2. Install board package: `esp32` by Espressif
+2. Install board package: **`esp32` by Espressif** (Tools → Board → Boards Manager)
+   > ⚠️ **Use only the official Espressif `esp32` package.** Third-party board managers (e.g. ESP32-BluePad32) use a different WiFi/lwIP stack and cause unpredictable stream failures and socket corruption.
 3. Select board: `AI Thinker ESP32-CAM`
 4. Set `SSID` / `PASSWORD` in `wifi_manager.cpp`
 5. Flash and verify — Serial Monitor shows:
    ```
-   [Camera] Stream : http://<DHCP-IP>/stream
-   [Camera] mDNS  : http://tinyguard-cam.local/stream
+   [Boot] Reset: power-on
+   [Camera] View : http://<DHCP-IP>/view
+   [Camera] mDNS : http://tinyguard-cam.local/view
+   [TinyGuard-CAM] View: http://<DHCP-IP>/view
    ```
-   Use the IP URL directly. The `.local` hostname works on Windows and macOS; on Fedora/Linux it requires `avahi-daemon` to be running.
+   Open `/view` in any browser. `/stream` is still registered internally (used by the `/view` page) but not the intended entry point.
 
 ### Monitor — ESP-IDF
 
@@ -164,7 +167,7 @@ Table showing all three correlation pairs: current Pearson r, EMA baseline r, z-
 Sessions completed, currently-streaming indicator, session starts in the rolling window, average session duration ± stddev, average inter-session interval ± stddev. Hidden until 5 sessions completed.
 
 **Rolling Statistics**
-Mean and stddev for RSSI and HB interval with live sparklines. Two additional sparklines show RSSI Stability (rolling stddev over time — a leading indicator for link instability) and PDS History (Profile Divergence Score trend over the last 60 polls). Sparklines accumulate client-side from `/status` polling — no additional storage on the ESP32.
+Mean and stddev for RSSI and HB interval with live sparklines. Two additional sparklines show RSSI Stability (rolling stddev over time — leading indicator for link instability) and PDS History (Profile Divergence Score trend over last 60 polls). Sparklines accumulate client-side from `/status` polling — no additional storage on the ESP32.
 
 **Alert Timeline**
 Last 8 alerts, most recent first. Each alert shows level badge, source category (`[METRIC]`, `[CORR]`, `[FP]`, `[WATCH]`), and message.
@@ -364,4 +367,4 @@ No heap allocation in any module. No dynamic containers.
 
 ## Status
 
-Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Camera stream architecture overhauled for stability (non-blocking per-client streamer tasks, mutex-protected viewer state, deferred reconnect). Dashboard sparklines updated: reconnects/hr and viewers graphs replaced with RSSI Stability (stddev trend) and PDS History. Both nodes switched from static IP to DHCP with mDNS hostnames (`tinyguard-cam.local`, `tinyguard-monitor.local`) — works on any hotspot without reflashing. Serial output always shows the DHCP-assigned IP directly for reliable access; mDNS hostname is secondary. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.
+Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Camera stream architecture overhauled: non-blocking per-client streamer tasks, mutex-protected viewer state, deferred reconnect, HMIRROR+VFLIP for inverted mount, `/view` as the sole browser entry point (HTML-wrapped MJPEG, smoother than raw stream on all browsers), brownout logging and threshold adjustment, BSD socket heartbeat to eliminate lwIP race with TCP stream. Both nodes use DHCP with mDNS hostnames (`tinyguard-cam.local`, `tinyguard-monitor.local`). Dashboard sparklines updated: RSSI Stability and PDS History replace reconnects/hr and viewers. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.

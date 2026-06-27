@@ -28,7 +28,7 @@
 - Blocks in `wifi_manager_init()` until connected (20s timeout → reboot)
 
 **`camera_server`**
-- Initialises OV2640; uses PSRAM if available (VGA/quality 10), else QVGA/quality 12
+- Initialises OV3660; uses PSRAM if available (VGA/quality 10), else QVGA/quality 12
 - HTTP server on port 80: `GET /` status page, `GET /stream` MJPEG multipart
 - Viewer count tracked on connect/disconnect; protected by `SemaphoreHandle_t` mutex so `telemetry_collect()` on core 0 never races the streamer on core 1
 - HTTP server task pinned to core 1 at priority 1; loops calling `handleClient()` continuously
@@ -1001,3 +1001,43 @@ I (19664) Dashboard: mDNS also : http://tinyguard-monitor.local/
 ```
 
 The DHCP IP is always the primary URL. mDNS remains functional where supported.
+
+---
+
+## Milestone 15 — Camera Stream Stability, Brownout Recovery, BSD Socket Heartbeat
+
+### Image orientation
+
+Camera mounted inverted (slotted between PCB and ESP-CAM module). Applied `set_hmirror(1)` and `set_vflip(1)` via OV3660 sensor register API after `esp_camera_init()`. Stream appears correctly oriented in browser without any client-side transform.
+
+### `/view` as sole browser entry point — `/stream` removed as public route
+
+Initially both `/view` (HTML wrapper) and `/stream` (raw MJPEG) were exposed. After testing, `/view` was noticeably smoother than `/stream` on both Firefox and Chrome/Brave — the `<img>` tag approach lets the browser handle multipart buffering more gracefully than direct stream navigation. `/stream` is still registered internally (the `/view` page's `<img src>` points to it) but is no longer the intended user-facing URL. `handle_root()` and all serial log lines updated to reference only `/view`.
+
+### Brownout logging and threshold (`esp32cam.ino`)
+
+The AI Thinker ESP32-CAM draws up to ~300 mA during WiFi TX bursts. On resistive USB cables or current-limited laptop ports, voltage sags cause brownout resets that appear as silent reboots or stream cutoffs.
+
+Added to `esp32cam.ino`:
+- `log_reset_reason()` — called first on every boot, logs `esp_reset_reason()` to serial. Brownout resets now print `[Boot] Reset: BROWNOUT DETECTED` with hardware fix advice instead of appearing as silent reboots.
+- `brownout_threshold_set(1)` — lowers the brownout detector trip point from default level 3 (~2.68V) to level 1 (~2.43V) via direct `RTC_CNTL_BROWN_OUT_REG` write. Gives ~250mV more headroom before reset fires. Chip remains protected.
+
+Recommended hardware fix: 100µF electrolytic capacitor across 5V/GND pins, dedicated USB charger (1A+) or USB-C breakout board instead of laptop USB port.
+
+### Heartbeat task isolation and BSD socket fix
+
+**Problem:** Stream write failed exactly every 10 seconds — precisely on the heartbeat interval. Root cause: `WiFiUDP` (Arduino) and `WiFiClient` (Arduino WebServer) share internal lwIP state. Concurrent UDP send from the heartbeat and TCP write from the streamer corrupted socket state regardless of which core each ran on.
+
+**Fix:** Replaced `WiFiUDP` entirely in `heartbeat_service.cpp` with raw BSD sockets (`lwip/sockets.h`). BSD sockets are re-entrant and do not share state with the Arduino `WiFiClient` layer — TCP and UDP can now run simultaneously on different cores without interference.
+
+`heartbeat_service_init()` opens a connected UDP socket (`socket()` → `connect()`) once after monitor IP is resolved. `heartbeat_service_tick()` uses `send()` — no address needed per call. On send failure the socket is closed and reopened next tick.
+
+Heartbeat moved from `loop()` into a dedicated `xTaskCreatePinnedToCore` task on core 0. HTTP server and streamer tasks remain on core 1. `loop()` is now empty (`vTaskDelay(1000ms)`).
+
+### DHCP monitor IP resolution
+
+`wifi_manager.cpp` resolves `tinyguard-monitor.local` via `MDNS.queryHost()` at boot (5 retries, 1s apart). Resolved IP stored in `s_monitor_ip[16]`. `MONITOR_IP` compile-time literal acts as override when set; left empty (`""`) to use mDNS by default. `heartbeat_service_tick()` retries resolution every 30s when `s_monitor_ip` is empty — covers the case where the monitor boots after the camera.
+
+### Board manager warning
+
+**The esp32cam firmware must be flashed using the `esp32` board package by Espressif with board set to `AI Thinker ESP32-CAM`.** Third-party board managers (e.g. ESP32-BluePad32) use a different WiFi/lwIP stack underneath and cause unpredictable stream failures, socket corruption, and build incompatibilities. Do not use them for this project.

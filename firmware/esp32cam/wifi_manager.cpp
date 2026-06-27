@@ -31,11 +31,12 @@ static const char* PASSWORD = "lol12345";
 
 static const char* MDNS_HOSTNAME = "tinyguard-cam";
 
-// Monitor address — set MONITOR_IP to the monitor's IP if mDNS is unreliable
-// on your network (common on Linux hotspots without Avahi multicast forwarding).
-// Leave as "" to rely purely on mDNS resolution of tinyguard-monitor.local.
-// The IP is printed on the monitor's serial output at boot.
-static const char* MONITOR_IP = "10.42.0.178";  // set from monitor serial output
+// Monitor address.
+// Leave as "" to resolve via mDNS (tinyguard-monitor.local) — works on
+// Windows, macOS, and Linux with Avahi. Set to a literal IP only if mDNS
+// is unreliable on your network (e.g. Fedora hotspot without multicast
+// forwarding). The monitor's IP is printed on its serial output at boot.
+static const char* MONITOR_IP = "";
 
 #define RECONNECT_DELAY_MS  500
 // -----------------------------------------------------------------------------
