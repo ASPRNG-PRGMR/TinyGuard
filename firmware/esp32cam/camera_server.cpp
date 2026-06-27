@@ -106,16 +106,24 @@ static void viewer_dec() {
 static void streamer_task(void *arg) {
     WiFiClient *client = reinterpret_cast<WiFiClient *>(arg);
 
-    client->println("HTTP/1.1 200 OK");
-    client->println("Content-Type: multipart/x-mixed-replace; boundary=frame");
-    client->println("Cache-Control: no-cache");
-    client->println("Connection: close");
-    client->println("Access-Control-Allow-Origin: *");
-    client->println();
+    // Use explicit \r\n throughout — Firefox's multipart parser is strict
+    // about CRLF line endings in both the HTTP response headers and the
+    // MIME part headers. Arduino's println() sends \r\n on most builds but
+    // is not guaranteed; explicit literals are safe on all board packages.
+    static const char *resp_hdr =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+        "Pragma: no-cache\r\n"
+        "Connection: close\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "\r\n";
+    client->write((const uint8_t *)resp_hdr, strlen(resp_hdr));
 
     viewer_inc();
 
     uint32_t last_frame_ms = 0;
+    bool     first_frame   = true;
 
     while (client->connected()) {
         uint32_t now = millis();
@@ -132,15 +140,21 @@ static void streamer_task(void *arg) {
             continue;
         }
 
-        char hdr[64];
+        // RFC 2046: boundary delimiter is \r\n--boundary for all parts
+        // except the very first, which has no leading \r\n.
+        char hdr[96];
         int  hdr_len = snprintf(hdr, sizeof(hdr),
-            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
+            "%s--frame\r\n"
+            "Content-Type: image/jpeg\r\n"
+            "Content-Length: %u\r\n"
+            "\r\n",
+            first_frame ? "" : "\r\n",
             (unsigned)fb->len);
+        first_frame = false;
 
         bool ok = true;
         if (hdr_len > 0 && client->write((const uint8_t *)hdr, hdr_len) != (size_t)hdr_len) ok = false;
         if (ok && client->write(fb->buf, fb->len) != fb->len) ok = false;
-        if (ok && client->write((const uint8_t *)"\r\n", 2) != 2) ok = false;
 
         esp_camera_fb_return(fb);
 
@@ -158,19 +172,47 @@ static void streamer_task(void *arg) {
     Serial.println("[Camera] Streamer task: client disconnected, cleaning up.");
     client->stop();
     delete client;
+    // Give the TCP stack time to fully release the socket before this task
+    // exits. Without this delay, rapid refreshes hit ERR_ADDRESS_UNREACHABLE
+    // because the WebServer's connection slot isn't free yet when the next
+    // SYN arrives.
+    vTaskDelay(pdMS_TO_TICKS(200));
     vTaskDelete(nullptr);
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────
 
 static void handle_root() {
-    char buf[128];
+    char buf[192];
     snprintf(buf, sizeof(buf),
         "TinyGuard ESP32-CAM\n"
-        "Stream: http://%s/stream\n"
-        "mDNS  : http://tinyguard-cam.local/stream\n",
+        "View   : http://%s/view   (all browsers)\n"
+        "Stream : http://%s/stream (Chrome/Brave only)\n"
+        "mDNS   : http://tinyguard-cam.local/view\n",
+        WiFi.localIP().toString().c_str(),
         WiFi.localIP().toString().c_str());
     server.send(200, "text/plain", buf);
+}
+
+static void handle_view() {
+    // Minimal HTML wrapper for Firefox/Linux compatibility.
+    // Firefox does not render raw multipart/x-mixed-replace streams on direct
+    // navigation — it treats them as file downloads. Embedding the stream in
+    // an <img> tag inside an HTML document renders correctly in all browsers.
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "<!DOCTYPE html><html><head>"
+        "<title>TinyGuard CAM</title>"
+        "<style>"
+          "body{margin:0;background:#0d1117;display:flex;align-items:center;"
+                "justify-content:center;height:100vh;}"
+          "img{max-width:100%%;max-height:100vh;display:block;}"
+        "</style>"
+        "</head><body>"
+        "<img src=\"http://%s/stream\" />"
+        "</body></html>",
+        WiFi.localIP().toString().c_str());
+    server.send(200, "text/html", buf);
 }
 
 static void handle_stream() {
@@ -273,12 +315,14 @@ void camera_server_init() {
     Serial.println("[Camera] Initialised.");
 
     server.on("/",       HTTP_GET, handle_root);
+    server.on("/view",   HTTP_GET, handle_view);
     server.on("/stream", HTTP_GET, handle_stream);
     server.onNotFound(handle_not_found);
     server.begin();
     Serial.println("[Camera] HTTP server started on port 80.");
-    Serial.printf("[Camera] Stream : http://%s/stream\n", WiFi.localIP().toString().c_str());
-    Serial.println("[Camera] mDNS  : http://tinyguard-cam.local/stream");
+    Serial.printf("[Camera] View   : http://%s/view   (all browsers)\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[Camera] Stream : http://%s/stream (Chrome/Brave)\n", WiFi.localIP().toString().c_str());
+    Serial.println("[Camera] mDNS  : http://tinyguard-cam.local/view");
 
     xTaskCreatePinnedToCore(
         [](void *) {

@@ -29,12 +29,13 @@
 static const char* SSID     = "idk";
 static const char* PASSWORD = "lol12345";
 
-// Hostname advertised via mDNS. Browser: http://tinyguard-cam.local/stream
 static const char* MDNS_HOSTNAME = "tinyguard-cam";
 
-// Fallback monitor IP used if mDNS resolution of tinyguard-monitor.local
-// fails. Set to "" to disable fallback and rely purely on mDNS.
-static const char* MONITOR_FALLBACK_IP = "";
+// Monitor address — set MONITOR_IP to the monitor's IP if mDNS is unreliable
+// on your network (common on Linux hotspots without Avahi multicast forwarding).
+// Leave as "" to rely purely on mDNS resolution of tinyguard-monitor.local.
+// The IP is printed on the monitor's serial output at boot.
+static const char* MONITOR_IP = "10.42.0.178";  // set from monitor serial output
 
 #define RECONNECT_DELAY_MS  500
 // -----------------------------------------------------------------------------
@@ -115,30 +116,32 @@ void wifi_manager_init() {
  * Returns true if a usable address was found.
  */
 bool wifi_manager_resolve_monitor_ip() {
-    Serial.println("[WiFi] Resolving tinyguard-monitor.local ...");
+    // If a static monitor IP is configured, use it directly — skip mDNS.
+    // This is the reliable path on Linux hotspots where mDNS multicast
+    // forwarding is disabled (nm-shared zone blocks 224.0.0.251 by default).
+    if (strlen(MONITOR_IP) > 0) {
+        strncpy(s_monitor_ip, MONITOR_IP, sizeof(s_monitor_ip));
+        Serial.printf("[WiFi] Monitor IP set directly: %s\n", s_monitor_ip);
+        return true;
+    }
 
-    // Give mDNS a moment — the monitor may still be booting
+    // MONITOR_IP not set — try mDNS resolution of tinyguard-monitor.local
+    Serial.println("[WiFi] Resolving tinyguard-monitor.local via mDNS...");
     IPAddress addr;
     for (int attempt = 0; attempt < 5; attempt++) {
         addr = MDNS.queryHost("tinyguard-monitor");
         if (addr != INADDR_NONE && (uint32_t)addr != 0) {
             snprintf(s_monitor_ip, sizeof(s_monitor_ip), "%d.%d.%d.%d",
                      addr[0], addr[1], addr[2], addr[3]);
-            Serial.printf("[WiFi] Monitor resolved: %s\n", s_monitor_ip);
+            Serial.printf("[WiFi] Monitor resolved via mDNS: %s\n", s_monitor_ip);
             return true;
         }
         Serial.printf("[WiFi] mDNS attempt %d/5 failed — retrying...\n", attempt + 1);
         delay(1000);
     }
 
-    // mDNS failed — use fallback if configured
-    if (strlen(MONITOR_FALLBACK_IP) > 0) {
-        strncpy(s_monitor_ip, MONITOR_FALLBACK_IP, sizeof(s_monitor_ip));
-        Serial.printf("[WiFi] mDNS failed. Using fallback: %s\n", s_monitor_ip);
-        return true;
-    }
-
     Serial.println("[WiFi] WARNING: monitor address unknown. Heartbeats will not be sent.");
+    Serial.println("[WiFi] Set MONITOR_IP in wifi_manager.cpp to the monitor's DHCP IP.");
     return false;
 }
 

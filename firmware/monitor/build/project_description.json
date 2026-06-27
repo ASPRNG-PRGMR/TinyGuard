@@ -1,7 +1,7 @@
 {
     "version":            "1.3",
     "project_name":       "tinyguard_monitor",
-    "project_version":    "aa33454-dirty",
+    "project_version":    "08c292e-dirty",
     "project_path":       "/home/noobiegg/Documents/gitHub_stuff/TinyGuard/firmware/monitor",
     "idf_path":           "/home/noobiegg/esp/esp-idf",
     "build_dir":          "/home/noobiegg/Documents/gitHub_stuff/TinyGuard/firmware/monitor/build",
