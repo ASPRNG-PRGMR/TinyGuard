@@ -1,44 +1,51 @@
 /*
  * wifi_manager.cpp — ESP32-CAM
  *
- * Connects to the laptop hotspot with a static IP.
- * Handles reconnects and tracks reconnect count.
+ * Connects to a WiFi AP using DHCP. No static IP.
  *
- * Network layout (from MVP spec):
- *   Hotspot gateway : 192.168.137.1
- *   ESP32-CAM       : 192.168.137.10  (static)
- *   ESP32 Monitor   : 192.168.137.20  (static)
- *   Subnet          : 255.255.255.0
+ * The ESP announces itself via mDNS as "tinyguard-cam.local" so the
+ * monitor and browser can reach it by name regardless of what subnet
+ * the hotspot assigns. This works on any hotspot (Windows, Fedora,
+ * Android, iOS) without reflashing when the network changes.
  *
- * Fix (vs original):
- *   - s_connected flag guards the DISCONNECTED handler so transient events
- *     during initial association don't increment the reconnect counter.
- *     Only a drop from an established connection is counted.
- *   - WiFi.reconnect() is deferred 500 ms via a one-shot FreeRTOS timer to
- *     give the AP time to clean up the old association before we hammer it
- *     again. Hammering is a common cause of repeated disconnection loops on
- *     the AI Thinker module.
+ * The monitor's address is resolved once after connection via
+ * wifi_manager_resolve_monitor_ip() — called by heartbeat_service
+ * before the first send. Falls back to a compile-time literal if mDNS
+ * resolution fails (useful when both ESPs are on a controlled network).
+ *
+ * Reconnect behaviour (unchanged from static-IP version):
+ *   - s_connected flag prevents spurious counter increments during
+ *     initial association.
+ *   - WiFi.reconnect() deferred 500 ms via one-shot FreeRTOS timer to
+ *     avoid hammering the AP before it releases the old association.
  */
 
-#include <WiFi.h>
 #include "wifi_manager.h"
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <Arduino.h>
 
 // --- Configuration -----------------------------------------------------------
 static const char* SSID     = "idk";
 static const char* PASSWORD = "lol12345";
 
-static const IPAddress STATIC_IP (192, 168, 137, 10);
-static const IPAddress GATEWAY   (192, 168, 137,  1);
-static const IPAddress SUBNET    (255, 255, 255,  0);
-static const IPAddress DNS1      (  8,   8,   8,  8);
+// Hostname advertised via mDNS. Browser: http://tinyguard-cam.local/stream
+static const char* MDNS_HOSTNAME = "tinyguard-cam";
 
-// Delay before calling WiFi.reconnect() after a drop.
-// Gives the AP time to release the old association entry.
+// Fallback monitor IP used if mDNS resolution of tinyguard-monitor.local
+// fails. Set to "" to disable fallback and rely purely on mDNS.
+static const char* MONITOR_FALLBACK_IP = "";
+
 #define RECONNECT_DELAY_MS  500
 // -----------------------------------------------------------------------------
 
 static int           s_reconnect_count = 0;
-static volatile bool s_connected       = false;  // true only after first GOT_IP
+static volatile bool s_connected       = false;
+
+// Resolved monitor IP — written once by wifi_manager_resolve_monitor_ip(),
+// read by heartbeat_service. No mutex needed: written before heartbeat task
+// starts sending, read-only after that.
+static char s_monitor_ip[16] = {0};
 
 static void reconnect_timer_cb(TimerHandle_t xTimer) {
     (void)xTimer;
@@ -49,16 +56,14 @@ static void wifi_event_handler(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
             if (s_connected) {
-                // Only count drops from an established connection.
                 s_connected = false;
                 s_reconnect_count++;
                 Serial.printf("[WiFi] Disconnected (reconnect #%d) — retrying in %d ms\n",
                               s_reconnect_count, RECONNECT_DELAY_MS);
-                // One-shot timer — deferred reconnect avoids hammering the AP.
                 TimerHandle_t t = xTimerCreate("wifi_rc", pdMS_TO_TICKS(RECONNECT_DELAY_MS),
                                                pdFALSE, nullptr, reconnect_timer_cb);
                 if (t) xTimerStart(t, 0);
-                else   WiFi.reconnect();   // fallback if timer alloc fails
+                else   WiFi.reconnect();
             }
             break;
 
@@ -76,18 +81,14 @@ static void wifi_event_handler(WiFiEvent_t event) {
 void wifi_manager_init() {
     WiFi.onEvent(wifi_event_handler);
     WiFi.mode(WIFI_STA);
+    // DHCP — no WiFi.config() call. AP assigns the address.
 
-    if (!WiFi.config(STATIC_IP, GATEWAY, SUBNET, DNS1)) {
-        Serial.println("[WiFi] Static IP config failed — check values.");
-    }
-
-    Serial.printf("[WiFi] Connecting to %s ...\n", SSID);
+    Serial.printf("[WiFi] Connecting to %s (DHCP) ...\n", SSID);
     WiFi.begin(SSID, PASSWORD);
 
-    uint32_t timeout_ms = 20000;
-    uint32_t start      = millis();
+    uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - start > timeout_ms) {
+        if (millis() - start > 20000) {
             Serial.println("[WiFi] Connection timed out. Restarting...");
             ESP.restart();
         }
@@ -95,6 +96,54 @@ void wifi_manager_init() {
         Serial.print(".");
     }
     Serial.println();
+    Serial.printf("[WiFi] DHCP address: %s\n", WiFi.localIP().toString().c_str());
+
+    // Start mDNS responder — advertises "tinyguard-cam.local"
+    if (!MDNS.begin(MDNS_HOSTNAME)) {
+        Serial.println("[WiFi] mDNS responder failed to start.");
+    } else {
+        // Advertise HTTP service so network scanners can discover it
+        MDNS.addService("http", "tcp", 80);
+        Serial.printf("[WiFi] mDNS: http://%s.local/\n", MDNS_HOSTNAME);
+    }
+}
+
+/*
+ * Resolve the monitor's mDNS hostname to an IP string.
+ * Called once by heartbeat_service_init() after wifi_manager_init().
+ * Tries mDNS first; falls back to MONITOR_FALLBACK_IP if set.
+ * Returns true if a usable address was found.
+ */
+bool wifi_manager_resolve_monitor_ip() {
+    Serial.println("[WiFi] Resolving tinyguard-monitor.local ...");
+
+    // Give mDNS a moment — the monitor may still be booting
+    IPAddress addr;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        addr = MDNS.queryHost("tinyguard-monitor");
+        if (addr != INADDR_NONE && (uint32_t)addr != 0) {
+            snprintf(s_monitor_ip, sizeof(s_monitor_ip), "%d.%d.%d.%d",
+                     addr[0], addr[1], addr[2], addr[3]);
+            Serial.printf("[WiFi] Monitor resolved: %s\n", s_monitor_ip);
+            return true;
+        }
+        Serial.printf("[WiFi] mDNS attempt %d/5 failed — retrying...\n", attempt + 1);
+        delay(1000);
+    }
+
+    // mDNS failed — use fallback if configured
+    if (strlen(MONITOR_FALLBACK_IP) > 0) {
+        strncpy(s_monitor_ip, MONITOR_FALLBACK_IP, sizeof(s_monitor_ip));
+        Serial.printf("[WiFi] mDNS failed. Using fallback: %s\n", s_monitor_ip);
+        return true;
+    }
+
+    Serial.println("[WiFi] WARNING: monitor address unknown. Heartbeats will not be sent.");
+    return false;
+}
+
+const char* wifi_manager_get_monitor_ip() {
+    return s_monitor_ip;
 }
 
 const char* wifi_manager_get_ip() {

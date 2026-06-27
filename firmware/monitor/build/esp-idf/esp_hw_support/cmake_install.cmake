@@ -1,4 +1,4 @@
-# Install script for directory: /home/notadmin/esp/esp-idf/components/esp_hw_support
+# Install script for directory: /home/noobiegg/esp/esp-idf/components/esp_hw_support
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -34,22 +34,27 @@ endif()
 
 # Set path to fallback-tool for dependency-resolution.
 if(NOT DEFINED CMAKE_OBJDUMP)
-  set(CMAKE_OBJDUMP "/home/notadmin/.espressif/tools/xtensa-esp-elf/esp-13.2.0_20240530/xtensa-esp-elf/bin/xtensa-esp32-elf-objdump")
+  set(CMAKE_OBJDUMP "/home/noobiegg/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin/xtensa-esp32-elf-objdump")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/port/esp32/cmake_install.cmake")
+  include("/home/noobiegg/Documents/gitHub_stuff/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/port/esp32/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/lowpower/cmake_install.cmake")
+  include("/home/noobiegg/Documents/gitHub_stuff/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/lowpower/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("/home/noobiegg/Documents/gitHub_stuff/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/modem/cmake_install.cmake")
 endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/mnt/c/Users/it/Documents/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/install_local_manifest.txt"
+  file(WRITE "/home/noobiegg/Documents/gitHub_stuff/TinyGuard/firmware/monitor/build/esp-idf/esp_hw_support/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

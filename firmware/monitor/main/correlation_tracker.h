@@ -49,23 +49,28 @@
  * for each pair. Z-score alerts when current r deviates significantly
  * from the long-term expected r.
  *
- * READINESS — THREE LAYERS
- * ------------------------
+ * READINESS — TWO LAYERS
+ * ----------------------
  * 1. Phase 1 learning complete      (snap->learning == false)
- * 2. behavior_profile all_ready     (bp->all_ready == true)
- *    — ensures EMA variances are mature before correlation is trusted
- * 3. Per-pair buffer has >= CORRELATION_MIN_SAMPLES AND the first valid
+ * 2. Per-pair buffer has >= CORRELATION_MIN_SAMPLES AND the first valid
  *    Pearson r has seeded the EMA baseline (baseline_seeded == true)
  *
  * Readiness is tracked and enforced per pair. Each pair begins emitting
- * alerts independently as soon as its own buffer satisfies layer 3.
+ * alerts independently as soon as its own buffer satisfies layer 2.
  * Pairs do not wait for each other.
  *
- * corr_pair_snapshot_t.ready  — true when that pair satisfies layer 3
- * correlation_snapshot_t.ready — true when ALL pairs satisfy layer 3
+ * NOTE: behavior_profile.all_ready is NOT a gate here. Correlation only
+ * needs the Phase 1 window to be complete — it has its own per-pair
+ * readiness model and does not depend on behavior_profile EMA maturity.
+ * Gating on all_ready added ~20 min of unnecessary delay with no
+ * detection benefit (behavior_profile EMA feeds fingerprint_engine, not
+ * correlation_tracker).
  *
- * Layers 1 and 2 are global gates: no pair accumulates samples or emits
- * alerts until both are satisfied.
+ * corr_pair_snapshot_t.ready  — true when that pair satisfies layer 2
+ * correlation_snapshot_t.ready — true when ALL pairs satisfy layer 2
+ *
+ * Layer 1 is a global gate: no pair accumulates samples or emits
+ * alerts until it is satisfied.
  *
  * MEMORY
  * ------
@@ -195,9 +200,8 @@ void correlation_tracker_init(void);
  * parsed directly from the heartbeat JSON. This is the only way to detect
  * stream_active=1 with viewer_count=0 (the primary threat case for that pair).
  *
- * Suppressed internally when any of layers 1–2 is unsatisfied.
- * Never calls stats_engine_get_snapshot() or behavior_profile_get_snapshot()
- * internally — snapshot ownership belongs to udp_receiver.
+ * Suppressed internally when snap->learning is true (Layer 1).
+ * Per-pair readiness (Layer 2) is enforced independently inside the function.
  */
 void correlation_tracker_update(const stats_snapshot_t *snap,
                                 const behavior_profile_snapshot_t *bp,

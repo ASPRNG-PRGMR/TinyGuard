@@ -818,3 +818,186 @@ Data source: `d.fingerprint.pds` — already present in `/status` JSON, no firmw
 - RSSI Stability sparkline shows low flat line under normal operation; spikes visible when camera is moved to edge of range
 - PDS History sparkline shows gradual climb during `validate.py rssi` run, returns to baseline on recovery
 - Device card reconnect count and viewer count numbers unchanged — still present and accurate
+
+---
+
+## Milestone 14 — DHCP + mDNS: Cross-Platform Network Compatibility
+
+### Problem
+
+Both ESP nodes used static IPs (`192.168.137.10` / `192.168.137.20`) tied to the Windows laptop hotspot subnet. This caused complete connectivity failure on any other network:
+
+**Fedora hotspot (`wlp3s0`):** NetworkManager assigns `10.42.0.1/24` to the hotspot interface. The ESP associates with the AP successfully (WiFi and IP are independent layers) but then self-assigns `192.168.137.x` — a subnet the laptop has no route to. `arp -n` showed no ESP entry. `ping 192.168.137.10` returned "Network unreachable". Neither the dashboard nor the camera stream were reachable. `curl` produced the same result.
+
+Investigation steps:
+- Confirmed `ap_isolate` was already `0` in the NM hotspot profile — not the cause
+- `sudo firewall-cmd --zone=nm-shared --list-all` revealed `forward: no` and a catch-all `reject` rule at priority 32767 — port 80 and 5000 not in the allowed list
+- Root cause confirmed: **subnet mismatch**, not firewall. The firewall would have been a secondary issue but the primary block was the ESP being on the wrong subnet entirely
+
+**Phone hotspot (Android, 2.4GHz):** Same subnet mismatch plus client isolation enabled by default on most Android hotspots — double-blocked.
+
+**WSL:** Same issue as Fedora; WSL routes through the Windows network stack but the static IP approach is equally brittle there.
+
+**Why Windows worked:** Windows laptop hotspot defaults to `192.168.137.x`, which happens to match the hardcoded static IPs. This was never intentional alignment — it was coincidence.
+
+### Fix — both nodes
+
+#### ESP32-CAM (`firmware/esp32cam/`)
+
+**`wifi_manager.cpp`:**
+- Removed `WiFi.config(STATIC_IP, GATEWAY, SUBNET, DNS1)` call — DHCP now used by default
+- Added `#include <ESPmDNS.h>`; `MDNS.begin("tinyguard-cam")` called after `GOT_IP`
+- `MDNS.addService("http", "tcp", 80)` advertises the stream endpoint for network scanners
+- Added `wifi_manager_resolve_monitor_ip()` — called once by `heartbeat_service_init()` after WiFi is up. Tries `MDNS.queryHost("tinyguard-monitor")` up to 5 times with 1s delays, writes result into `s_monitor_ip[16]`. Falls back to `MONITOR_FALLBACK_IP` compile-time literal if mDNS resolution fails (empty string = disable heartbeats gracefully)
+- Added `wifi_manager_get_monitor_ip()` — returns resolved address string, consumed by `heartbeat_service_tick()`
+
+**`wifi_manager.h`:**
+- Added declarations for `wifi_manager_resolve_monitor_ip()` and `wifi_manager_get_monitor_ip()`
+
+**`heartbeat_service.cpp`:**
+- Removed hardcoded `MONITOR_IP = "192.168.137.20"`
+- `heartbeat_service_init()` now calls `wifi_manager_resolve_monitor_ip()` and logs the resolved address
+- `heartbeat_service_tick()` reads `wifi_manager_get_monitor_ip()` each tick; skips send if empty (monitor not yet resolved or not present on network)
+
+#### Monitor (`firmware/monitor/`)
+
+**`wifi_manager.c`:**
+- Removed `esp_netif_dhcpc_stop()` and `esp_netif_set_ip_info()` calls — DHCP client left running
+- Removed `STATIC_IP`, `STATIC_GW`, `STATIC_MASK` defines
+- Added `mdns_init()`, `mdns_hostname_set("tinyguard-monitor")`, `mdns_instance_name_set()`, `mdns_service_add("_http", "_tcp", 80)` — called after `WIFI_CONNECTED_BIT` is set
+- Serial now logs DHCP-assigned IP from `IP_EVENT_STA_GOT_IP` event data (unchanged) plus mDNS hostname
+
+**`wifi_manager.h`:** No API change — `wifi_manager_init()` signature unchanged.
+
+**`main/CMakeLists.txt`:** `mdns` must be added to `REQUIRES`. Omitting it produces a clean build but `mdns_init()` links to nothing and silently fails at runtime.
+
+### Additional Fedora firewall fix
+
+Even with DHCP resolving correctly, `nm-shared` zone blocks port 80 (TCP) and port 5000 (UDP) by default with a catch-all reject rule. Required one-time fix on the Fedora host:
+
+```bash
+sudo firewall-cmd --zone=nm-shared --add-port=80/tcp --permanent
+sudo firewall-cmd --zone=nm-shared --add-port=5000/udp --permanent
+sudo firewall-cmd --zone=nm-shared --add-forward --permanent
+sudo firewall-cmd --reload
+```
+
+This is a host-side fix — not in firmware. Documented here for reproducibility when setting up on a new Fedora machine.
+
+### Result
+
+- Both nodes acquire DHCP addresses from whatever hotspot they connect to
+- Dashboard reachable at `http://tinyguard-monitor.local/` on Windows, Fedora, and Android hotspots without any firmware change
+- Camera stream reachable at `http://tinyguard-cam.local/stream`
+- Hotspot connected-devices list now shows both ESPs with their DHCP-assigned IPs (previously showed "IP not available" because the self-assigned static IP wasn't visible to the DHCP server)
+- Heartbeat routing is fully dynamic: camera resolves monitor hostname at boot, no hardcoded target IP
+- Monitor does not need to know the camera's IP — UDP receiver listens on `0.0.0.0:5000` and accepts packets from any source (unchanged)
+
+### Notes
+
+- mDNS resolution on first boot can take 3–5 seconds. `wifi_manager_resolve_monitor_ip()` retries 5 times with 1s intervals before giving up. If the monitor isn't on the network yet, heartbeats are silently skipped until the camera reboots or the monitor comes online and the camera is reflashed. A future improvement would be periodic re-resolution in `heartbeat_service_tick()` when `s_monitor_ip` is empty.
+- mDNS `.local` resolution requires the host OS to support mDNS (Avahi on Linux, Bonjour on macOS/Windows 10+). All three target platforms support it. WSL2 may require Avahi running in the WSL instance (`sudo systemctl start avahi-daemon`) if `.local` names don't resolve.
+
+### Build error — mDNS component not found
+
+**Symptom:** CMake configure step failed with:
+
+```
+HINT: The component 'mdns' could not be found. [...] the component has been
+moved to the IDF component manager [...]
+```
+
+**Root cause:** In newer ESP-IDF versions (v5.x), `mdns` was removed from the built-in component set and moved to the IDF Component Manager registry (`components.espressif.com`). Adding it to `REQUIRES` in `CMakeLists.txt` is necessary but no longer sufficient — the component must also be explicitly fetched via the component manager before it is available to the build system.
+
+**Fix:**
+
+```bash
+cd firmware/monitor
+idf.py add-dependency "espressif/mdns"
+```
+
+This creates/updates `main/idf_component.yml` with the dependency entry and downloads the component into the build tree on the next `idf.py build`. The `REQUIRES mdns` line in `CMakeLists.txt` remains unchanged — both are needed.
+
+### Build error — missing PRIV_REQUIRES for esp_wifi and friends
+
+**Symptom:** Compilation failed immediately after the mDNS fix with:
+
+```
+Compilation failed because wifi_manager.c includes esp_wifi.h, provided by
+esp_wifi component(s). However, esp_wifi component(s) is not in the
+requirements list of "main".
+To fix this, add esp_wifi to PRIV_REQUIRES list of idf_component_register.
+```
+
+**Root cause:** ESP-IDF v5 enforces strict component dependency declarations. Any component whose headers are `#include`d in a source file must be explicitly listed — either in `REQUIRES` (if the header is also exposed in a public `.h`) or `PRIV_REQUIRES` (if only used internally in `.c` files). The previous `CMakeLists.txt` had no `PRIV_REQUIRES` at all, which worked in older IDF versions where transitive dependencies were pulled in implicitly. `esp_wifi`, `nvs_flash`, `esp_netif`, and `esp_event` are all used directly in `wifi_manager.c` but none are exposed in `wifi_manager.h`, so all four belong in `PRIV_REQUIRES`.
+
+**Fix:** Added `PRIV_REQUIRES` to `idf_component_register` in `main/CMakeLists.txt`:
+
+```cmake
+REQUIRES mdns
+PRIV_REQUIRES esp_wifi nvs_flash esp_netif esp_event
+```
+
+All four added at once rather than one at a time — each missing entry would have produced the same error on the next build cycle.
+
+### Build error — missing PRIV_REQUIRES for esp_driver_gpio, esp_http_server, lwip
+
+**Symptom:** Build failed again after the esp_wifi fix:
+
+```
+Compilation failed because udp_receiver.c includes driver/gpio.h, provided by
+esp_driver_gpio component(s). However, esp_driver_gpio component(s) is not in
+the requirements list of "main".
+```
+
+**Root cause:** Same class of error as above — all source files were audited for angle-bracket includes to find remaining undeclared dependencies: `driver/gpio.h` (`udp_receiver.c`) → `esp_driver_gpio`; `esp_http_server.h` (`dashboard_server.c`) → `esp_http_server`; `lwip/sockets.h` and `lwip/netdb.h` (`udp_receiver.c`) → `lwip`. None exposed in public headers, so all belong in `PRIV_REQUIRES`.
+
+**Fix:** Final `CMakeLists.txt` `PRIV_REQUIRES` list:
+
+```cmake
+idf_component_register(
+    SRCS ...
+    INCLUDE_DIRS "."
+    REQUIRES mdns
+    PRIV_REQUIRES
+        esp_wifi
+        nvs_flash
+        esp_netif
+        esp_event
+        esp_driver_gpio
+        esp_http_server
+        lwip
+)
+target_link_libraries(${COMPONENT_LIB} PRIVATE m)
+```
+
+All remaining undeclared dependencies resolved in one pass by scanning all source files for ESP-IDF includes before building again.
+
+### Issue — dashboard and camera log wrong URLs after mDNS migration
+
+**Symptom:** Serial output showed `http://tinyguard-monitor.local/` and `http://tinyguard-cam.local/stream`. Opening these in a browser on Fedora produced no response — the `.local` mDNS resolution was unreliable. However, navigating to the DHCP IP printed earlier in the boot log (`10.42.0.178`) worked correctly.
+
+**Root cause:** mDNS `.local` name resolution requires the host OS to have an mDNS resolver active. On Fedora this is Avahi (`avahi-daemon`), which may not be running or may not be resolving `.local` names from the hotspot interface. The server itself was working fine — only the logged URL was misleading.
+
+**Fix — `dashboard_server.c`:**
+- Added `#include "esp_netif.h"`
+- `dashboard_server_start()` now reads the actual DHCP IP via `esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")` + `esp_netif_get_ip_info()` and logs it directly using `IPSTR` / `IP2STR`
+- mDNS hostname logged as a secondary line so it's still visible when it works
+- Falls back to hostname-only log if `esp_netif_get_ip_info()` fails
+
+**Fix — `camera_server.cpp`:**
+- `handle_root()` now builds the status string dynamically using `WiFi.localIP().toString()` — the `GET /` response shows the actual IP alongside the mDNS hostname
+- `camera_server_init()` logs both the IP and the mDNS hostname after server start
+
+Serial output now:
+```
+I (19662) Dashboard: Dashboard : http://10.42.0.178/
+I (19663) Dashboard: Status    : http://10.42.0.178/status
+I (19664) Dashboard: mDNS also : http://tinyguard-monitor.local/
+```
+```
+[Camera] Stream : http://10.42.0.235/stream
+[Camera] mDNS  : http://tinyguard-cam.local/stream
+```
+
+The DHCP IP is always the primary URL. mDNS remains functional where supported.

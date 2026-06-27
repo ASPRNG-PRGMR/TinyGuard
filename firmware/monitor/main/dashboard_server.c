@@ -55,6 +55,7 @@
 #include "fingerprint_engine.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
@@ -228,18 +229,14 @@ static const char PAGE_HTML[] =
       "<canvas id='spark-hb' height='40'></canvas>"
     "</div>"
     "<div>"
-      "<div style='color:#8b949e;font-size:.75em;margin-bottom:2px'>RSSI Stability "
-        "<span style='font-weight:400;color:#484f58'>(stddev — lower&nbsp;=&nbsp;better)</span>"
-      "</div>"
-      "<div class='stat-val' id='stat-rssi-sd'>— dBm</div>"
-      "<canvas id='spark-rssi-sd' height='40'></canvas>"
+      "<div style='color:#8b949e;font-size:.75em;margin-bottom:2px'>Reconnects/hr</div>"
+      "<div class='stat-val' id='stat-rec'>—</div>"
+      "<canvas id='spark-rec' height='40'></canvas>"
     "</div>"
     "<div>"
-      "<div style='color:#8b949e;font-size:.75em;margin-bottom:2px'>Profile Divergence Score "
-        "<span style='font-weight:400;color:#484f58'>(PDS history)</span>"
-      "</div>"
-      "<div class='stat-val' id='stat-pds-hist'>—</div>"
-      "<canvas id='spark-pds' height='40'></canvas>"
+      "<div style='color:#8b949e;font-size:.75em;margin-bottom:2px'>Viewers</div>"
+      "<div class='stat-val' id='stat-view'>—</div>"
+      "<canvas id='spark-view' height='40'></canvas>"
     "</div>"
   "</div>"
 "</div>"
@@ -262,7 +259,7 @@ static const char PAGE_HTML[] =
 "<script>"
 /* History ring buffer — 60 points per metric */
 "const HIST=60;"
-"const hist={rssi:[],hb:[],rssiSd:[],pds:[]};"
+"const hist={rssi:[],hb:[],rec:[],view:[]};"
 "let fetchTs=0;"
 
 /* Sparkline renderer */
@@ -338,21 +335,20 @@ static const char PAGE_HTML[] =
   "if(d.rssi_mean!=null){"
     "setText('stat-rssi',d.rssi_mean.toFixed(1)+' / '+d.rssi_stddev.toFixed(1)+' dBm');"
     "setText('stat-hb',Math.round(d.hb_interval_mean)+' / '+Math.round(d.hb_interval_stddev)+' ms');"
-    "setText('stat-rssi-sd',d.rssi_stddev!=null?d.rssi_stddev.toFixed(2)+' dBm':'—');"
+    "setText('stat-rec',d.reconnect_rate_mean.toFixed(2)+' / '+(d.reconnect_rate_stddev!=null?d.reconnect_rate_stddev:0).toFixed(2));"
+    "setText('stat-view',d.viewer_mean.toFixed(1));"
   "}"
 
   /* History accumulation */
   "if(d.rssi!=null){"
     "hist.rssi.push(d.rssi);if(hist.rssi.length>HIST)hist.rssi.shift();"
     "hist.hb.push(d.hb_interval_mean!=null?d.hb_interval_mean:0);if(hist.hb.length>HIST)hist.hb.shift();"
-    "hist.rssiSd.push(d.rssi_stddev!=null?d.rssi_stddev:0);if(hist.rssiSd.length>HIST)hist.rssiSd.shift();"
-    "const pdsVal=(d.fingerprint&&d.fingerprint.pds!=null)?d.fingerprint.pds:0;"
-    "hist.pds.push(pdsVal);if(hist.pds.length>HIST)hist.pds.shift();"
-    "setText('stat-pds-hist',d.fingerprint&&d.fingerprint.ready?pdsVal+' / 100':'(maturing…)');"
+    "hist.rec.push(d.reconnects != null ? d.reconnects : 0);if(hist.rec.length>HIST)hist.rec.shift();"
+    "hist.view.push(d.viewer_count!=null?d.viewer_count:0);if(hist.view.length>HIST)hist.view.shift();"
     "spark('spark-rssi',hist.rssi,'#58a6ff');"
     "spark('spark-hb',hist.hb,'#3fb950');"
-    "spark('spark-rssi-sd',hist.rssiSd,'#f0883e');"
-    "spark('spark-pds',hist.pds,'#a371f7');"
+    "spark('spark-rec',hist.rec,'#d29922');"
+    "spark('spark-view',hist.view,'#a371f7');"
   "}"
 
   /* Fingerprint */
@@ -635,6 +631,17 @@ void dashboard_server_start(void)
     httpd_register_uri_handler(server, &root_uri);
     httpd_register_uri_handler(server, &status_uri);
 
-    ESP_LOGI(TAG, "Dashboard running at http://192.168.137.20/");
-    ESP_LOGI(TAG, "JSON status at     http://192.168.137.20/status");
+    /* Print the actual DHCP-assigned IP so the user can open it directly.
+     * .local mDNS resolution is unreliable on some host OS configurations
+     * (Fedora without Avahi, WSL). The IP is always reachable. */
+    esp_netif_ip_info_t ip_info = {};
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        ESP_LOGI(TAG, "Dashboard : http://" IPSTR "/",      IP2STR(&ip_info.ip));
+        ESP_LOGI(TAG, "Status    : http://" IPSTR "/status", IP2STR(&ip_info.ip));
+    } else {
+        ESP_LOGI(TAG, "Dashboard : http://tinyguard-monitor.local/");
+        ESP_LOGI(TAG, "Status    : http://tinyguard-monitor.local/status");
+    }
+    ESP_LOGI(TAG, "mDNS also : http://tinyguard-monitor.local/");
 }

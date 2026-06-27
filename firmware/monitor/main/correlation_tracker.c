@@ -258,10 +258,11 @@ void correlation_tracker_update(const stats_snapshot_t *snap,
     /* ── Layer 1: Phase 1 still learning ── */
     if (snap->learning) return;
 
-    /* ── Layer 2: behavior_profile not yet mature ── */
-    if (!bp->all_ready) return;
-
     /*
+     * Suppressed internally when Phase 1 learning is still active (Layer 1).
+     * Layer 3 (per-pair buffer minimum) is enforced independently per pair
+     * via pair_add_sample() and the ready flag — no global gate needed here.
+     *
      * Extract per-heartbeat metric values from the stats snapshot.
      * stream_active comes directly from the heartbeat packet via the caller —
      * it is NOT derived from viewer_count. This is required to detect the

@@ -19,11 +19,14 @@ Nothing in the application layer is inspected. Detection is based entirely on ob
 
 ## Hardware
 
-| Device | Role | IP |
+| Device | Role | Address |
 |---|---|---|
-| ESP32-CAM (AI Thinker) | Simulated target camera | `192.168.137.10` |
-| ESP32 DevKit V1 | TinyGuard monitor | `192.168.137.20` |
-| Laptop hotspot | Network hub / gateway | `192.168.137.1` |
+| ESP32-CAM (AI Thinker) | Simulated target camera | `tinyguard-cam.local` (DHCP) |
+| ESP32 DevKit V1 | TinyGuard monitor | `tinyguard-monitor.local` (DHCP) |
+| Hotspot | Network hub / gateway | Any subnet — DHCP assigns addresses |
+
+Both devices use DHCP and advertise via mDNS. No static IPs. Works on any hotspot
+(Windows, Fedora, Android) without reflashing when the network changes.
 
 ---
 
@@ -76,9 +79,12 @@ tinyguard/
 2. Install board package: `esp32` by Espressif
 3. Select board: `AI Thinker ESP32-CAM`
 4. Set `SSID` / `PASSWORD` in `wifi_manager.cpp`
-5. Flash and verify:
-   - Stream: `http://192.168.137.10/stream`
-   - Heartbeats visible in Serial Monitor at 115200 baud
+5. Flash and verify — Serial Monitor shows:
+   ```
+   [Camera] Stream : http://<DHCP-IP>/stream
+   [Camera] mDNS  : http://tinyguard-cam.local/stream
+   ```
+   Use the IP URL directly. The `.local` hostname works on Windows and macOS; on Fedora/Linux it requires `avahi-daemon` to be running.
 
 ### Monitor — ESP-IDF
 
@@ -89,13 +95,23 @@ idf.py set-target esp32
 idf.py build && idf.py flash monitor
 ```
 
-Confirm on serial: `[WiFi-Monitor] Connected. IP: 192.168.137.20`
+Confirm on serial:
+```
+I (xxx) WiFi-Monitor: Connected. IP: <DHCP-IP>  (DHCP)
+I (xxx) Dashboard: Dashboard : http://<DHCP-IP>/
+I (xxx) Dashboard: mDNS also : http://tinyguard-monitor.local/
+```
+Use the IP URL directly. The `.local` hostname works on Windows and macOS; on Fedora/Linux it requires `avahi-daemon` to be running.
 
 > **CMakeLists.txt:** ensure `main/CMakeLists.txt` lists all Phase 2 source files in `SRCS`:
 > `behavior_profile.c`, `correlation_tracker.c`, `session_tracker.c`, `fingerprint_engine.c`.
 > Missing entries cause linker errors that look like undefined references to `_init` functions.
+>
+> **mDNS component:** run `idf.py add-dependency "espressif/mdns"` from `firmware/monitor/` before building. mDNS was moved out of ESP-IDF core in v5.x and must be fetched via the component manager.
+>
+> **PRIV_REQUIRES:** `main/CMakeLists.txt` must declare `esp_wifi nvs_flash esp_netif esp_event esp_driver_gpio esp_http_server lwip` under `PRIV_REQUIRES`. See the Quick Start CMakeLists snippet below.
 
-Open browser: `http://192.168.137.20/` — dashboard loads immediately.
+Open browser at the IP shown in serial — dashboard loads immediately.
 
 > **One USB cable?** Flash monitor, confirm WiFi on serial, then unplug. Power camera separately. GPIO2 LED blinks every ~10s while heartbeats are arriving.
 
@@ -123,7 +139,7 @@ python3 scripts/validate.py all
 # Single-signal injection typically produces sub-threshold PDS
 ```
 
-Watch `http://192.168.137.20/` during runs. Alerts appear in real-time on the dashboard.
+Watch `http://tinyguard-monitor.local/` during runs. Alerts appear in real-time on the dashboard.
 
 > The script bypasses the camera entirely — sends crafted UDP packets directly to the monitor. Each scenario is reproducible and deterministic.
 
@@ -131,7 +147,7 @@ Watch `http://192.168.137.20/` during runs. Alerts appear in real-time on the da
 
 ## Dashboard
 
-Served by the monitor at `http://192.168.137.20/`. Polls `/status` every 10 seconds via JavaScript fetch — no page refresh.
+Served by the monitor at `http://tinyguard-monitor.local/`. Polls `/status` every 10 seconds via JavaScript fetch — no page refresh.
 
 ### Panels
 
@@ -155,7 +171,7 @@ Last 8 alerts, most recent first. Each alert shows level badge, source category 
 
 ### JSON Endpoint
 
-`http://192.168.137.20/status` returns a complete JSON snapshot:
+`http://tinyguard-monitor.local/status` returns a complete JSON snapshot:
 
 ```json
 {
@@ -348,4 +364,4 @@ No heap allocation in any module. No dynamic containers.
 
 ## Status
 
-Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Camera stream architecture overhauled for stability (non-blocking per-client streamer tasks, mutex-protected viewer state, deferred reconnect). Dashboard sparklines updated: reconnects/hr and viewers graphs replaced with RSSI Stability (stddev trend) and PDS History. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.
+Phase 1 (statistical anomaly detection) and Phase 2 (behavioral fingerprinting) complete and validated on hardware. Camera stream architecture overhauled for stability (non-blocking per-client streamer tasks, mutex-protected viewer state, deferred reconnect). Dashboard sparklines updated: reconnects/hr and viewers graphs replaced with RSSI Stability (stddev trend) and PDS History. Both nodes switched from static IP to DHCP with mDNS hostnames (`tinyguard-cam.local`, `tinyguard-monitor.local`) — works on any hotspot without reflashing. Serial output always shows the DHCP-assigned IP directly for reliable access; mDNS hostname is secondary. Phase 3 (STM32 DSP spectral analysis) planned. See `devlog.md` for full engineering history.
