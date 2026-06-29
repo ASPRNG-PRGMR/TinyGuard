@@ -31,12 +31,21 @@ import time
 import sys
 import argparse
 
-MONITOR_IP   = "192.168.137.20"
-MONITOR_PORT = 5000
+import socket
+
+def resolve_monitor():
+    try:
+        return socket.gethostbyname("tinyguard-monitor.local")
+    except socket.gaierror:
+        raise RuntimeError(
+            "Could not resolve tinyguard-monitor.local.\n"
+            "Ensure the monitor is connected and mDNS is working."
+        )
+
+MONITOR_IP = resolve_monitor()
 INTERVAL     = 10.0   # match camera heartbeat interval
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
 
 def send(uptime_ms, rssi, stream_active, viewer_count, reconnects):
     packet = json.dumps({
@@ -48,7 +57,7 @@ def send(uptime_ms, rssi, stream_active, viewer_count, reconnects):
         "reconnects":   reconnects,
         "timestamp":    uptime_ms // 1000,
     })
-    sock.sendto(packet.encode(), (MONITOR_IP, MONITOR_PORT))
+    sock.sendto(packet.encode(), (MONITOR_IP, 500))
     print(f"  → sent | uptime={uptime_ms}ms rssi={rssi} viewers={viewer_count} "
           f"reconnects={reconnects} stream={stream_active}")
 
@@ -151,10 +160,10 @@ def scenario_all():
     """Run all scenarios in sequence."""
     print("=" * 60)
     print("TinyGuard Validation — Full Suite")
-    print("Monitor dashboard: http://192.168.137.20/")
+    print("Monitor dashboard: http://tinyguard-monitor.local")
     print("=" * 60)
     print("\nNOTE: Run this AFTER the monitor has completed learning (5 min).")
-    print("Watch http://192.168.137.20/ during the run.\n")
+    print("Watch http://tinyguard-monitor.local/ during the run.\n")
 
     uptime = 10000
     uptime = scenario_normal(uptime, count=10)

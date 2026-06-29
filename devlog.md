@@ -1041,3 +1041,25 @@ Heartbeat moved from `loop()` into a dedicated `xTaskCreatePinnedToCore` task on
 ### Board manager warning
 
 **The esp32cam firmware must be flashed using the `esp32` board package by Espressif with board set to `AI Thinker ESP32-CAM`.** Third-party board managers (e.g. ESP32-BluePad32) use a different WiFi/lwIP stack underneath and cause unpredictable stream failures, socket corruption, and build incompatibilities. Do not use them for this project.
+
+### Validation utility update — mDNS monitor discovery
+
+After migrating the firmware from static IP addressing to DHCP + mDNS, `scripts/validate.py` still transmitted validation packets to the legacy hardcoded monitor address (`192.168.137.20`). This prevented the validation suite from working on networks where the monitor received a different DHCP lease.
+
+**Fix:**
+- Removed the hardcoded monitor IP from `validate.py`
+- Added automatic hostname resolution using `socket.gethostbyname("tinyguard-monitor.local")`
+- Validation packets are now sent to the resolved address while continuing to use UDP port `5000`
+- Corrected the UDP destination passed to `socket.sendto()` after the refactor (`(ip, port)` tuple rather than only the IP string)
+
+This keeps the validation script compatible with DHCP-based deployments without requiring any manual IP changes when switching between hotspots or LANs.
+
+### Known limitation — WSL2 mDNS resolution
+
+Testing revealed that Windows Subsystem for Linux (WSL2) does not reliably participate in the Windows mDNS resolver. Although the monitor correctly advertises `tinyguard-monitor.local`, hostname resolution from inside WSL fails with:
+
+```text
+Name or service not known
+```
+
+Running the validation utility from native Windows Python resolves the hostname correctly. A future improvement is to add an optional `--ip` argument allowing manual monitor address override when mDNS is unavailable.
