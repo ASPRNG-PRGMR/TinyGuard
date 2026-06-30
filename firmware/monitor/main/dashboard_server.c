@@ -112,6 +112,24 @@ static const char PAGE_HTML[] =
 ".phase2-gate{color:#484f58;font-size:.8em;font-style:italic;padding:6px 0}"
 ".two-col{display:grid;grid-template-columns:1fr 1fr;gap:6px}"
 "@media(max-width:500px){.two-col{grid-template-columns:1fr}}"
+".float-pills{position:fixed;bottom:16px;right:16px;display:flex;gap:8px;"
+            "z-index:50}"
+".float-pill{display:flex;align-items:center;gap:6px;padding:8px 14px;"
+            "border-radius:20px;font-size:.78em;font-weight:700;cursor:pointer;"
+            "background:#161b22;border:1.5px solid transparent;"
+            "box-shadow:0 2px 10px rgba(0,0,0,.45);"
+            "transition:transform .15s,box-shadow .15s;user-select:none}"
+".float-pill:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.55)}"
+".float-pill.warn{color:#d29922}"
+".float-pill.info{color:#58a6ff}"
+".float-pill.warn.active{border-color:#d29922;background:#2b2210}"
+".float-pill.info.active{border-color:#58a6ff;background:#0f2236}"
+".float-pill .fp-count{background:rgba(255,255,255,.12);padding:1px 7px;"
+                      "border-radius:10px;font-size:.85em;min-width:1.2em;"
+                      "text-align:center}"
+".filter-status{font-size:.72em;color:#8b949e}"
+".filter-status a{color:#58a6ff;cursor:pointer;text-decoration:none;"
+                 "margin-left:6px}"
 "</style>"
 "</head><body>"
 
@@ -246,11 +264,14 @@ static const char PAGE_HTML[] =
 "</div>"
 
 /* ── Alert timeline (full width) ── */
-"<div class='card grid-wide'>"
-  "<div style='display:flex;justify-content:space-between;margin-bottom:10px'>"
+"<div class='card grid-wide' id='alert-timeline-card'>"
+  "<div style='display:flex;justify-content:space-between;margin-bottom:4px'>"
     "<div class='card-title' style='margin-bottom:0'>Alert Timeline</div>"
     "<div style='color:#8b949e;font-size:.75em'>"
       "<span id='alert-total'>0</span> total</div>"
+  "</div>"
+  "<div class='filter-status' id='filter-status' style='margin-bottom:8px'>"
+    "Showing WARN &amp; CRITICAL"
   "</div>"
   "<div id='alert-list'>"
     "<div style='color:#484f58;font-size:.8em'>No alerts yet</div>"
@@ -259,12 +280,24 @@ static const char PAGE_HTML[] =
 
 "</div>" /* end grid */
 
+/* ── Floating alert-level pills ── */
+"<div class='float-pills'>"
+  "<div class='float-pill warn' id='pill-warn'>"
+    "&#9888; WARN <span class='fp-count' id='pill-warn-count'>0</span>"
+  "</div>"
+  "<div class='float-pill info' id='pill-info'>"
+    "&#8505; INFO <span class='fp-count' id='pill-info-count'>0</span>"
+  "</div>"
+"</div>"
+
 /* ── JavaScript ── */
 "<script>"
 /* History ring buffer — 60 points per metric */
 "const HIST=60;"
 "const hist={rssi:[],hb:[],rssiSd:[],pds:[]};"
 "let fetchTs=0;"
+"let lastAlerts=[];"
+"let alertFilter=null;" /* null=default(WARN+CRIT), 'warn', or 'info' */
 
 /* Sparkline renderer */
 "function spark(id,data,color){"
@@ -421,9 +454,22 @@ static const char PAGE_HTML[] =
 
   /* Alerts */
   "setText('alert-total',d.alert_count!=null?d.alert_count:0);"
+  "lastAlerts=d.alerts||[];"
+  "setText('pill-warn-count',lastAlerts.filter(a=>a.level===1||a.level===2).length);"
+  "setText('pill-info-count',lastAlerts.filter(a=>a.level===0).length);"
+  "renderAlerts();"
+"}"
+
+/* Renders #alert-list according to the active filter.
+ * default (alertFilter=null) and 'warn' both show WARN+CRITICAL only —
+ * this is what keeps routine INFO noise (e.g. 'Learning complete') out
+ * of the main timeline. 'info' shows INFO entries exclusively.        */
+"function renderAlerts(){"
   "const al=el('alert-list');"
-  "if(al&&d.alerts&&d.alerts.length){"
-    "al.innerHTML=d.alerts.slice().reverse().map(a=>{"
+  "if(!al)return;"
+  "const list=lastAlerts.filter(a=>"
+    "alertFilter==='info'?a.level===0:(a.level===1||a.level===2));"
+  "al.innerHTML=list.length?list.slice().reverse().map(a=>{"
       "const col=a.level===2?'#f85149':a.level===1?'#d29922':'#58a6ff';"
       "const lvl=a.level===2?'CRIT':a.level===1?'WARN':'INFO';"
       "const src=a.src!=null?a.src:'';"
@@ -432,11 +478,35 @@ static const char PAGE_HTML[] =
         "`<span class='alert-src'>[${src}]</span>`+"
         "`<span>${a.msg}</span>`+"
         "`</div>`;"
-    "}).join('');"
-  "}else if(al&&(!d.alerts||!d.alerts.length)){"
-    "al.innerHTML=\"<div style='color:#484f58;font-size:.8em'>No alerts yet</div>\";"
+    "}).join('')"
+    ":\"<div style='color:#484f58;font-size:.8em'>No alerts of this type yet</div>\";"
+  "const fs=el('filter-status');"
+  "if(fs){"
+    "if(alertFilter==='info'){"
+      "fs.innerHTML=\"Showing INFO only <a id='filter-clear'>&#10005; clear</a>\";"
+    "}else if(alertFilter==='warn'){"
+      "fs.innerHTML=\"Showing WARN &amp; CRITICAL <a id='filter-clear'>&#10005; clear</a>\";"
+    "}else{"
+      "fs.innerHTML='Showing WARN &amp; CRITICAL';"
+    "}"
+    "const cl=el('filter-clear');"
+    "if(cl)cl.onclick=()=>setFilter(null);"
+  "}"
+  "el('pill-warn').classList.toggle('active',alertFilter!=='info');"
+  "el('pill-info').classList.toggle('active',alertFilter==='info');"
+"}"
+
+/* Pill click -> set/toggle filter, re-render, scroll timeline into view */
+"function setFilter(level){"
+  "alertFilter=(alertFilter===level)?null:level;"
+  "renderAlerts();"
+  "if(alertFilter){"
+    "const card=el('alert-timeline-card');"
+    "if(card)card.scrollIntoView({behavior:'smooth',block:'start'});"
   "}"
 "}"
+"el('pill-warn').onclick=()=>setFilter('warn');"
+"el('pill-info').onclick=()=>setFilter('info');"
 
 /* Polling */
 "async function poll(){"
