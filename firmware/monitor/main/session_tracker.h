@@ -156,6 +156,7 @@ typedef struct {
     bool     in_session;                /* stream currently active            */
     bool     ready;                     /* >= SESSION_MIN_SESSIONS completed  */
     uint32_t sessions_completed;        /* total completed sessions ever      */
+    uint32_t current_session_elapsed_ms;/* ms since session start, 0 if idle */
 } session_snapshot_t;
 
 /* ── public API ───────────────────────────────────────────────────────── */

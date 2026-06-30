@@ -228,10 +228,14 @@ session_snapshot_t session_tracker_get_snapshot(void)
     out.ema_interval_ms       = s_state.ema_interval_ms;
     out.ema_interval_stddev   = (s_state.ema_interval_var > 0.0f)
                                 ? sqrtf(s_state.ema_interval_var) : 0.0f;
-    out.session_count_in_window = s_state.session_count;
-    out.in_session            = s_state.in_session;
-    out.ready                 = s_state.ready;
-    out.sessions_completed    = s_state.sessions_completed;
+    out.session_count_in_window    = s_state.session_count;
+    out.in_session                 = s_state.in_session;
+    out.ready                      = s_state.ready;
+    out.sessions_completed         = s_state.sessions_completed;
+    out.current_session_elapsed_ms = s_state.in_session
+        ? (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS
+                     - s_state.session_start_tick)
+        : 0;
 
     xSemaphoreGive(s_state.mutex);
     return out;

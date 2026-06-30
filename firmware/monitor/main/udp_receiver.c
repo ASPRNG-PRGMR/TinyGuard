@@ -29,6 +29,8 @@
  *   parsed heartbeat packet — not derived from viewer_count.
  */
 
+#include "session_tracker.h"
+#include "fingerprint_engine.h"
 #include "udp_receiver.h"
 #include "device_state.h"
 #include "stats_engine.h"
@@ -223,6 +225,8 @@ static void udp_rx_task(void *arg)
          */
         behavior_profile_snapshot_t bp_snap = behavior_profile_get_snapshot();
         correlation_tracker_update(&snap, &bp_snap, s.stream_active);
+	session_tracker_update(s.stream_active, s.last_rx_tick);
+	fingerprint_engine_update();
 
         /* ── Serial output ──
          * Rules for ESP-IDF v5 ESP_LOGI:

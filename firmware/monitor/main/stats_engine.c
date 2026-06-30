@@ -28,6 +28,7 @@
  */
 
 #include "stats_engine.h"
+#include "alert_manager.h"        // ← add this
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -205,7 +206,13 @@ void stats_engine_update(const stats_sample_t *in)
         ESP_LOGI(TAG, "First sample received. Learning until %" PRIu32 " ms",
                  s_state.learning_end_ms);
     }
-
+    
+    char msg[ALERT_MSG_LEN];
+    snprintf(msg, sizeof(msg),
+         "Learning complete: RSSI baseline mean=%.1f dBm, %" PRIu32 " samples",
+	 metric_mean(&s_state.rssi), s_state.samples_total);
+    alert_raise_info(ALERT_TYPE_LEARNING_COMPLETE, msg);
+    
     /* Check if learning phase just ended */
     if (!s_state.learning_done && now_ms >= s_state.learning_end_ms
         && s_state.samples_total > 0) {
@@ -218,6 +225,12 @@ void stats_engine_update(const stats_sample_t *in)
         ESP_LOGI(TAG, "  HB interval base : mean=%.0f ms stddev=%.0f ms",
                  metric_mean(&s_state.heartbeat_interval_ms),
                  metric_stddev(&s_state.heartbeat_interval_ms));
+
+        char msg[ALERT_MSG_LEN];
+        snprintf(msg, sizeof(msg),
+                 "Learning complete: RSSI baseline mean=%.1f dBm, %" PRIu32 " samples",
+                 metric_mean(&s_state.rssi), s_state.samples_total);
+        alert_raise_info(ALERT_TYPE_LEARNING_COMPLETE, msg);
     }
 
     /* ── RSSI ── */

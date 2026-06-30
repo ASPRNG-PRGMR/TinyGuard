@@ -161,7 +161,11 @@ static pds_component_t score_correlation_drift(
 
 /*
  * S — Session Drift
- * Proxy signals: count deviation + CV on duration/interval.
+ * Four signals:
+ *   1. Real-time: current session elapsed vs ema_duration (Phase 3)
+ *   2. Session count deviation from expected frequency
+ *   3. CV on session duration
+ *   4. CV on inter-session interval
  */
 static pds_component_t score_session_drift(
         const session_snapshot_t *se)
@@ -173,23 +177,38 @@ static pds_component_t score_session_drift(
 
     float max_z = 0.0f;
 
-    /* Signal 1: session count deviation from expected frequency */
-    if (se->ema_interval_ms > 0.0f) {
-        float expected   = WINDOW_DURATION_MS / se->ema_interval_ms;
-        float observed   = (float)se->session_count_in_window;
-        float count_std  = sqrtf(expected < 1.0f ? 1.0f : expected);
-        float z          = fabs_f((observed - expected) / count_std);
+    /* Signal 1: real-time current session duration z-score (Phase 3)
+     * If currently streaming and ema_duration is established, score
+     * how long the current session has been running vs the expected mean.
+     * A session running 3× the normal duration is suspicious in real time,
+     * not just after it ends. */
+    if (se->in_session
+        && se->current_session_elapsed_ms > 0
+        && se->ema_duration_ms > 0.0f
+        && se->ema_duration_stddev > 0.0f) {
+        float z = fabs_f(((float)se->current_session_elapsed_ms
+                          - se->ema_duration_ms)
+                         / se->ema_duration_stddev);
         if (z > max_z) max_z = z;
     }
 
-    /* Signal 2: CV on session duration */
+    /* Signal 2: session count deviation from expected frequency */
+    if (se->ema_interval_ms > 0.0f) {
+        float expected  = WINDOW_DURATION_MS / se->ema_interval_ms;
+        float observed  = (float)se->session_count_in_window;
+        float count_std = sqrtf(expected < 1.0f ? 1.0f : expected);
+        float z         = fabs_f((observed - expected) / count_std);
+        if (z > max_z) max_z = z;
+    }
+
+    /* Signal 3: CV on session duration */
     if (se->ema_duration_ms > 0.0f && se->ema_duration_stddev > 0.0f) {
         float cv = se->ema_duration_stddev / se->ema_duration_ms;
         float z  = cv * 3.0f;
         if (z > max_z) max_z = z;
     }
 
-    /* Signal 3: CV on inter-session interval */
+    /* Signal 4: CV on inter-session interval */
     if (se->ema_interval_ms > 0.0f && se->ema_interval_stddev > 0.0f) {
         float cv = se->ema_interval_stddev / se->ema_interval_ms;
         float z  = cv * 3.0f;
@@ -293,7 +312,24 @@ void fingerprint_engine_init(void)
 void fingerprint_engine_update(void)
 {
     behavior_profile_snapshot_t bp = behavior_profile_get_snapshot();
-    if (!bp.all_ready) return;
+    if (!bp.all_ready) {
+        /*
+         * One-shot diagnostic: log once every ~60s while waiting, so it's
+         * possible to confirm from serial whether behavior_profile is the
+         * blocker, rather than this function silently never running.
+         */
+        static uint32_t s_last_wait_log_ms = 0;
+        uint32_t now = esp_log_timestamp();
+        if (now - s_last_wait_log_ms > 60000) {
+            s_last_wait_log_ms = now;
+            ESP_LOGI(TAG,
+                     "Waiting on behavior_profile.all_ready "
+                     "(rssi=%d hb=%d recon=%d view=%d)",
+                     bp.rssi.ready, bp.heartbeat_interval_ms.ready,
+                     bp.reconnect_rate.ready, bp.viewer_count.ready);
+        }
+        return;
+    }
 
     stats_snapshot_t       ss = stats_engine_get_snapshot();
     correlation_snapshot_t cs = correlation_tracker_get_snapshot();
@@ -305,7 +341,13 @@ void fingerprint_engine_update(void)
 
     uint8_t pds = compute_pds(&d, &c, &s);
 
-    ESP_LOGD(TAG, "PDS=%u  D=%u(z=%.2f)  C=%u(z=%.2f)  S=%u(z=%.2f)",
+    static bool s_first_ready_logged = false;
+    if (!s_first_ready_logged) {
+        s_first_ready_logged = true;
+        ESP_LOGI(TAG, "Fingerprint engine now ready — PDS active.");
+    }
+
+    ESP_LOGI(TAG, "PDS=%u  D=%u(z=%.2f)  C=%u(z=%.2f)  S=%u(z=%.2f)",
              pds,
              d.sub_score, (double)d.max_zscore,
              c.sub_score, (double)c.max_zscore,

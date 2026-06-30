@@ -1063,3 +1063,61 @@ Name or service not known
 ```
 
 Running the validation utility from native Windows Python resolves the hostname correctly. A future improvement is to add an optional `--ip` argument allowing manual monitor address override when mDNS is unavailable.
+
+---
+
+## Milestone 16 — Phase 2 Pipeline Gap: session_tracker / fingerprint_engine Never Called
+
+### Symptom
+
+PDS stuck at 0, "Behavioral Fingerprint" panel permanently showing "Waiting for profile to mature..." regardless of uptime (confirmed stuck past 100+ minutes — well beyond the ~25 min `behavior_profile.all_ready` should require). Session Behavior panel simultaneously contradicted the Device panel: `Stream: ACTIVE` while `Currently streaming: no`, `Sessions completed: 0` indefinitely.
+
+### Root cause
+
+`udp_receiver.c`'s heartbeat pipeline called `stats_engine_update()`, `anomaly_engine_*()`, `behavior_profile_seed()/update()`, and `correlation_tracker_update()` — and stopped there. `session_tracker_update()` and `fingerprint_engine_update()` were never invoked anywhere in the codebase, despite both modules being correctly `_init()`'d in `main.c` and despite the README's call-order diagram explicitly listing them as the last two steps per heartbeat.
+
+Both modules' internal logic was correct in isolation — confirmed by tracing `behavior_profile.c`, `fingerprint_engine.c`, and `session_tracker.c` independently. `fingerprint_snapshot_t` and `session_state_t` simply never left their zero-initialized state from `_init()`, since the only functions that update them were dead code paths.
+
+This was a wiring gap, not a logic bug — most likely introduced when `correlation_tracker_update()` was wired in (Milestone 8) and the last two pipeline stages were never added in the same pass.
+
+### Fix
+
+**`udp_receiver.c`:**
+- Added `#include "session_tracker.h"` and `#include "fingerprint_engine.h"`
+- Added, immediately after the existing `correlation_tracker_update(&snap, &bp_snap, s.stream_active);` call:
+```c
+  session_tracker_update(s.stream_active, s.last_rx_tick);
+  fingerprint_engine_update();
+```
+
+Pipeline now matches the README's documented call order exactly.
+
+### Secondary fix — missing LEARNING_COMPLETE alert
+
+While diagnosing the above, found that `stats_engine.c`'s learning-complete transition only logged via `ESP_LOGI()` and never raised an alert through `alert_manager`, despite the README stating `LEARNING_COMPLETE` is an INFO alert visible in the dashboard's alert history. Confirmed via a 105-minute uptime device showing only 5 total alerts ever raised, none of them `LEARNING_COMPLETE`.
+
+**Fix — `stats_engine.c`:**
+- Added `#include "alert_manager.h"`
+- Inside the existing `learning_done` transition block (after the existing `ESP_LOGI` baseline summary):
+```c
+  char msg[ALERT_MSG_LEN];
+  snprintf(msg, sizeof(msg),
+           "Learning complete: RSSI baseline mean=%.1f dBm, %" PRIu32 " samples",
+           metric_mean(&s_state.rssi), s_state.samples_total);
+  alert_raise_info(ALERT_TYPE_LEARNING_COMPLETE, msg);
+```
+
+### Verified
+
+- Build succeeds (caught and fixed a stray closing brace + misplaced block introduced during the first attempt at this edit — the alert block had landed outside the `learning_done` if-block and closed `stats_engine_update()` early, producing a cascade of "expected identifier before 'if'" errors through the rest of the function)
+- `LEARNING_COMPLETE` INFO alert now appears in alert history at the 5-minute mark
+- `session.in_session` now matches `device.stream_active` on the dashboard in real time
+- `fingerprint.ready` flips true ~25 min post-learning as designed; PDS sparkline begins populating instead of showing "(maturing...)" indefinitely
+
+### Known limitations
+
+None new. Confirms the existing 20 min / 25 min readiness windows documented in `behavior_profile.h` and `fingerprint_engine.h` are accurate now that the pipeline actually calls the relevant `_update()` functions every heartbeat.
+
+---
+
+
